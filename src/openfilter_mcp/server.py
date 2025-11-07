@@ -1,11 +1,14 @@
 import os
-from fastmcp import FastMCP
-from typing import Any, Dict
 from pathlib import Path
+from typing import Any, Dict
 
-from code_context.main import _search_index, _get_chunk
 from code_context.indexing import INDEXES_DIR
-from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR  # Import MONOREPO_CLONE_DIR
+from code_context.main import _get_chunk, _search_index
+from fastmcp import FastMCP
+
+from openfilter_mcp.preindex_repos import (
+    MONOREPO_CLONE_DIR,  # Import MONOREPO_CLONE_DIR
+)
 
 mcp = FastMCP(name="OpenFilter MCP")
 
