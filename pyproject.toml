@@ -1,6 +1,7 @@
 [project]
 name = "openfilter-mcp"
 version = "0.1.0"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "code-context>=0.1.0",
     "fastmcp>=2.12.4",
@@ -14,7 +15,7 @@ requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
 
 [project.scripts]
-index = "openfilter_mcp.index:preindex_openfilter_repos"
+index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
 [tool.uv]
