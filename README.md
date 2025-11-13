@@ -1,8 +1,8 @@
 # Openfilter-MCP
 
-This is an MCP server that allows LLMs access code and information about Plainsight OpenFilter.
+This is a Model Context Protocol ([MCP]) server that allows instruction-optimized AI agents such as large language models (LLMs) or vision language model (VLM) to access code and information about Plainsight OpenFilter.
 
-By leveraging semantic retrieval capabilities, any COTS LLM can efficiently access relevant information and code snippets from the OPF platform, answering questions or planning to ensure that pipelines and filters are optimized for user requirements.
+By leveraging semantic retrieval capabilities, any off-the-shelf LLM or VLM can efficiently access relevant information and code snippets from the OpenFilter platform, answering questions or planning to ensure that pipelines and filters are optimized for user requirements.
 
 This project uses [uv]. first, install dependencies;
 
@@ -15,6 +15,12 @@ Preindex:
 And finally, serve:
 
 ```uv run serve```
+
+You can also run the version published on DockerHub:
+
+```
+docker run 
+```
 
 The configuring MCP client should then add the MCP server under the HTTP transport to the
 required url, e.g.:
@@ -47,3 +53,4 @@ required url, e.g.:
 
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
+[mcp]: https://anthropic.com/news/model-context-protocol
