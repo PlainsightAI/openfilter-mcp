@@ -1,0 +1,33 @@
+name: CI
+
+on:
+    push:
+        branches:
+            - main
+        tags:
+            - "v*"
+    pull_request:
+        branches:
+            - main
+
+jobs:
+    publish-docker:
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Determine tags
+              id: tags
+              run: |
+                  if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+                    VERSION=${GITHUB_REF#refs/tags/v}
+                    echo "tags=${VERSION},latest" >> $GITHUB_OUTPUT
+                  else
+                    echo "tags=latest" >> $GITHUB_OUTPUT
+                  fi
+
+            - uses: PlainsightAI/gh-actions/publish-dockerhub@main
+              with:
+                  image-name: plainsightai/openfilter-mcp
+                  tags: ${{ steps.tags.outputs.tags }}
