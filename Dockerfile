@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Disable strict host key checking for container
@@ -48,6 +49,7 @@ COPY README.md ./
 COPY --from=indexer /app/indexes/ indexes/
 
 # Install dependencies (CPU-only for serving)
+ENV CMAKE_ARGS="-DGGML_CUDA=off"
 RUN --mount=type=ssh uv sync
 
-CMD ["uv", "run", "serve"]
+CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]

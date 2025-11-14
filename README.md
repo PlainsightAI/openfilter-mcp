@@ -16,11 +16,25 @@ And finally, serve:
 
 ```uv run serve```
 
-You can also run the version published on DockerHub:
+## Docker
 
+You can build and run this with Docker:
+
+```bash
+# Build the image (requires SSH key with access to plainsightai/code-context)
+docker build --ssh default -t openfilter-mcp .
+
+# Run the container
+docker run -d -p 3000:3000 --name openfilter-mcp openfilter-mcp
+
+# Check logs
+docker logs openfilter-mcp
+
+# Stop the container
+docker stop openfilter-mcp
 ```
-docker run 
-```
+
+The server will be available at http://localhost:3000/mcp
 
 The configuring MCP client should then add the MCP server under the HTTP transport to the
 required url, e.g.:
@@ -44,7 +58,7 @@ required url, e.g.:
   "mcpServers": {
     "openfilter": {
       "command": "npx", // or equivalent, e.g., `pnpm dlx`
-      "args": ["-y", "mcp-remote", "http://localhost:8888/mcp", "--allow-http"]
+      "args": ["-y", "mcp-remote", "http://localhost:3000/mcp", "--allow-http"]
     }
   }
 }
