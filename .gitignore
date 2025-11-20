@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# coding agents
+.gemini/
+.claude/
+
+# local stuff
+clones/
+indexes/
