@@ -1,0 +1,79 @@
+name: Test
+
+on:
+  push:
+    branches: [main, modularity]
+  pull_request:
+    branches: [main]
+
+jobs:
+  run-unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Install NVIDIA CUDA Toolkit
+      # WHY: This project depends on GPU-accelerated libraries that require CUDA during build:
+      # - faiss-gpu-cu12: FAISS with CUDA 12 support
+      # - onnxruntime-gpu: ONNX Runtime with GPU support
+      # - llama-cpp-python: Built with GGML_CUDA=on flag (requires nvcc compiler)
+      # Without CUDA toolkit, these packages will fail to install or fall back to CPU-only versions
+      - name: Install CUDA Toolkit 12.6.3
+        uses: Jimver/cuda-toolkit@v0.2.21
+        id: cuda-toolkit
+        with:
+          cuda: '12.6.3'
+          # WHY: network method is faster and more reliable for CI environments
+          method: 'network'
+          # WHY: We only need the essential components for compilation, not the full toolkit
+          # This reduces installation time and disk usage
+          sub-packages: '["nvcc", "cudart", "libraries-dev"]'
+
+      # Verify CUDA installation
+      # WHY: Ensures CUDA is properly installed before attempting to build dependencies
+      # If this fails, the build will fail with clearer error messages
+      - name: Verify CUDA installation
+        run: |
+          echo "CUDA installation path: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          echo "Installed CUDA version: ${{ steps.cuda-toolkit.outputs.cuda }}"
+          nvcc --version
+          echo "CUDA_HOME=$CUDA_HOME"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+          echo "PATH=$PATH"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Python Version
+        run: python --version
+
+      # Install Python dependencies with CUDA available
+      # WHY: The CUDA toolkit must be installed BEFORE this step so that:
+      # 1. llama-cpp-python can compile with CUDA support (GGML_CUDA=on)
+      # 2. GPU-specific wheels for faiss-gpu-cu12 and onnxruntime-gpu can be installed
+      # 3. CMake can find CUDA libraries during the build process
+      - name: Install dependencies
+        run: |
+          export PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin:$PATH"
+          export LD_LIBRARY_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64:$LD_LIBRARY_PATH"
+          uv sync --dev
+        env:
+          # WHY: Ensure CUDA libraries are available during compilation
+          CUDA_HOME: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+
+      # Note: GPU runtime operations will fail on standard GitHub runners
+      # WHY: GitHub's ubuntu-latest runners don't have physical NVIDIA GPUs
+      # The CUDA toolkit allows us to COMPILE GPU code, but not RUN it
+      # Tests should mock GPU operations or skip GPU-specific tests in CI
+      - name: Run tests
+        run: uv run python -m pytest tests/ -v --tb=short
