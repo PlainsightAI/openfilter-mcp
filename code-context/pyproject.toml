@@ -12,7 +12,7 @@ dependencies = [
     "Pillow>=10.3.0",
     "llama-cpp-python>=0.3.16",
     "huggingface-hub>=0.35.3",
-    "onnxruntime-gpu>=1.23.0",
+    "onnxruntime>=1.23.0",
     "tree-sitter>=0.25.2",
     "tree-sitter-language-pack>=0.10.0",
     "pathspec>=0.12.1",
@@ -21,7 +21,7 @@ dependencies = [
     "nbconvert>=7.16.6",
     "httpx>=0.28.1",
     "jq>=1.10.0",
-    "faiss-gpu-cu12>=1.12.0",
+    "faiss-cpu>=1.12.0",
 ]
 
 [project.scripts]
@@ -42,7 +42,7 @@ dev = [
 ]
 
 [tool.uv]
-config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
+config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=off" } }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

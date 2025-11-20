@@ -1,7 +1,11 @@
-FROM nvidia/cuda:13.0.1-devel-ubuntu22.04 AS indexer
+# syntax=docker/dockerfile:1.4-labs
+FROM python:3.12-slim AS indexer
 
 RUN apt-get update && apt-get install -y \
     git \
+    gcc \
+    g++ \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Disable strict host key checking for container
@@ -12,15 +16,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.19 /uv /uvx /bin/
 WORKDIR /app
 
 # Copy project files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
 COPY src/ src/
 COPY README.md ./
+COPY code-context/ code-context/
 
-RUN --mount=type=ssh uv sync
-
-# Use CUDA stub libraries for build-time GPU code execution
-RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+# Build with CPU-only dependencies
+ENV CMAKE_ARGS="-DGGML_CUDA=off"
+RUN uv sync --locked || uv sync
 RUN uv run index
 
 FROM python:3.12-slim AS server
@@ -41,15 +44,16 @@ RUN mkdir -p /root/.ssh && \
 WORKDIR /app
 
 # Copy project files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
 COPY src/ src/
 COPY README.md ./
+COPY code-context/ code-context/
 
 # Copy the built index from the indexer stage
 COPY --from=indexer /app/indexes/ indexes/
 
 # Install dependencies (CPU-only for serving)
 ENV CMAKE_ARGS="-DGGML_CUDA=off"
-RUN --mount=type=ssh uv sync
+RUN uv sync --locked || uv sync
 
 CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]

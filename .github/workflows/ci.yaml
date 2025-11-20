@@ -11,10 +11,19 @@ on:
             - main
 
 jobs:
-    publish-docker:
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    build-docker:
         runs-on: ubuntu-latest
         steps:
+            - name: Free disk space
+              run: |
+                  sudo rm -rf /usr/share/dotnet
+                  sudo rm -rf /usr/local/lib/android
+                  sudo rm -rf /opt/ghc
+                  sudo rm -rf /opt/hostedtoolcache/CodeQL
+                  docker system prune -af
+                  docker buildx prune -af
+                  df -h
+
             - uses: actions/checkout@v4
 
             - name: Determine tags
@@ -27,7 +36,44 @@ jobs:
                     echo "tags=latest" >> $GITHUB_OUTPUT
                   fi
 
-            - uses: PlainsightAI/gh-actions/publish-dockerhub@main
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Login to Docker Hub
+              if: github.event_name == 'push'
+              uses: docker/login-action@v3
               with:
-                  image-name: plainsightai/openfilter-mcp
-                  tags: ${{ steps.tags.outputs.tags }}
+                  username: plainsightai
+                  password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+
+            - name: Prepare tag list
+              id: prepare-tags
+              run: |
+                  IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+                  TAG_ARGS=""
+                  for TAG in "${TAGS[@]}"; do
+                    TAG_TRIMMED=$(echo "$TAG" | xargs)
+                    TAG_ARGS+="plainsightai/openfilter-mcp:${TAG_TRIMMED},"
+                  done
+                  TAG_ARGS="${TAG_ARGS%,}"
+                  echo "tags=$TAG_ARGS" >> $GITHUB_OUTPUT
+
+            - name: Extract metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: plainsightai/openfilter-mcp
+                  tags: |
+                      type=raw,value=skip
+
+            - name: Build and push Docker image
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  file: Dockerfile
+                  platforms: linux/amd64
+                  push: ${{ github.event_name == 'push' }}
+                  tags: ${{ steps.prepare-tags.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
