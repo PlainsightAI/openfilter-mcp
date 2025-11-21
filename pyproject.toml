@@ -1,36 +1,25 @@
 [project]
 name = "openfilter-mcp"
 version = "0.1.0"
+requires-python = ">=3.10,<3.13"
 dependencies = [
-    "code-context",
+    "code-context>=0.1.0",
     "fastmcp>=2.12.4",
+    "gitpython>=3.1.45",
     "httpx>=0.28.1",
+    "jq>=1.10.0",
 ]
 
-[tool.poetry]
-name = "openfilter-mcp"
-version = "0.1.0"
-description = "Simplified semantic search for code"
-authors = ["Your Name <you@example.com>"]
-
-[tool.poetry.dependencies]
-python = ">=3.9,<3.13"
-fastmcp = "^0.1.0"
-code-context = { path = "../code-context" }
-httpx = "^0.25.2"
-python-jq = "^1.6.1"
-GitPython = "^3.1.40"
-
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
 
-[tool.poetry.scripts]
-index = "openfilter_mcp.index:preindex_openfilter_repos"
+[project.scripts]
+index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
 [tool.uv]
 config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
 
 [tool.uv.sources]
-code-context = { git = "ssh://git@github.com/plainsightai/code-context@modularity" }
+code-context = { path = "./code-context" }
