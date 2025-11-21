@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 RUN mkdir -p /root/.ssh && \
     echo "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null" > /root/.ssh/config
 
-COPY --from=ghcr.io/astral-sh/uv:0.8.19 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
 WORKDIR /app
 
 # Copy project files
