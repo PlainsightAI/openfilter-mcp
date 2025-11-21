@@ -11,7 +11,6 @@ import os
 import shutil
 import traceback
 from datetime import datetime
-from typing import Any, Dict
 
 from .chunking import chunk_document_ast
 from .embedding import get_embeddings, INSTRUCTION_CONFIG
@@ -64,7 +63,6 @@ def index_repository_direct(repo_url: str, force: bool = False, is_local: bool =
         os.makedirs(
             index_path, exist_ok=True
         )  # Ensure index_path exists before writing config
-        index_config_path = os.path.join(index_path, "index_config.json")
 
         if _indexing_lock and _indexing_jobs and job_id:
             with _indexing_lock:
