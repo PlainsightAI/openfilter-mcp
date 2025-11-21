@@ -3,7 +3,6 @@ Unit tests for the embedding module.
 """
 
 import numpy as np
-import pytest
 from unittest.mock import Mock, patch
 from code_context.embedding import (
     get_embedding,

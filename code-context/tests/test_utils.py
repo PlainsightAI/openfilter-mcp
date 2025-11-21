@@ -4,7 +4,6 @@ Unit tests for the utils module.
 
 import os
 import tempfile
-import pytest
 from pathspec import PathSpec
 from code_context.utils import (
     SUPPORTED_EXTENSIONS,

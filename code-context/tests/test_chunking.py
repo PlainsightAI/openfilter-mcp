@@ -2,7 +2,6 @@
 Unit tests for the chunking module.
 """
 
-import pytest
 from code_context.chunking import (
     chunk_document,
     chunk_document_ast,

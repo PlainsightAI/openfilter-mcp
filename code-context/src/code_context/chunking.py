@@ -7,7 +7,6 @@ from typing import Dict, Any, List, Optional
 
 import nbformat
 from nbconvert.exporters import ScriptExporter
-from tree_sitter import Parser
 from tree_sitter_language_pack import get_parser
 
 # Node types that represent logical code units for AST-based chunking
