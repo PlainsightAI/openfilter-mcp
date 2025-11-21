@@ -112,8 +112,6 @@ def index_repository_direct(repo_url: str, force: bool = False, is_local: bool =
                 _indexing_jobs[job_id]["index_name"] = index_name
                 _indexing_jobs[job_id]["revision"] = revision
 
-        ignore_spec = _load_gitignore_patterns(clone_path)
-
     # Clean up old clones and indexes if force=True
     if force:
         if _indexing_lock and _indexing_jobs and job_id:
@@ -156,6 +154,7 @@ def index_repository_direct(repo_url: str, force: bool = False, is_local: bool =
             print(f"Cloning repository from {repo_url}...")
 
         git.Repo.clone_from(repo_url, clone_path)
+        ignore_spec = _load_gitignore_patterns(clone_path)
 
     if _indexing_lock and _indexing_jobs and job_id:
         with _indexing_lock:
