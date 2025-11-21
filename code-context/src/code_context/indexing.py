@@ -21,7 +21,7 @@ INDEXES_DIR = "indexes"
 CLONES_DIR = "clones"
 
 
-def _do_index(job_id: str, repo_url: str, force: bool, is_local: bool = False, _indexing_jobs: dict = {}, _indexing_lock=None):
+def _do_index(job_id: str, repo_url: str, force: bool, is_local: bool = False, _indexing_jobs: dict = None, _indexing_lock=None):
     """Internal function that performs the actual indexing work."""
     try:
         # Update job status to processing before calling the direct indexing function
