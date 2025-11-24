@@ -22,7 +22,7 @@ You can build and run this with Docker:
 
 ```bash
 # Run the container
-docker run -d -p 3000:3000 plainsightai/openfilter-mcp
+docker run --name openfilter-mcp -d -p 3000:3000 plainsightai/openfilter-mcp
 
 # Check logs
 docker logs openfilter-mcp
@@ -33,7 +33,8 @@ docker stop openfilter-mcp
 
 The server will be available at:
 
-```http://localhost:3000/mcp
+```
+http://localhost:3000/mcp
 ```
 
 The configuring MCP client should then add the MCP server under the HTTP transport to the
