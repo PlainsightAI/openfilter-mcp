@@ -66,12 +66,15 @@ jobs:
                   tags: |
                       type=raw,value=skip
 
+            - name: Set up QEMU
+              uses: docker/setup-qemu-action@v3
+
             - name: Build and push Docker image
               uses: docker/build-push-action@v5
               with:
                   context: .
                   file: Dockerfile
-                  platforms: linux/amd64
+                  platforms: linux/amd64,linux/arm64
                   push: ${{ github.event_name == 'push' }}
                   tags: ${{ steps.prepare-tags.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}
