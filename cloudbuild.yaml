@@ -59,9 +59,9 @@ steps:
         EOF
 
         docker buildx create --use --name multiarch
-        TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest"
-        [[ "${TAG_NAME}" =~ ^v ]] && TAGS="$TAGS -t ${_DOCKERHUB_REPO}:$${TAG_NAME#v}"
-        docker buildx build --platform linux/amd64,linux/arm64 $TAGS --push -f Dockerfile.gpu .
+        _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest"
+        [[ "${TAG_NAME}" =~ ^v ]] && TAGS="$_TAGS -t ${_DOCKERHUB_REPO}:$${TAG_NAME#v}"
+        docker buildx build --platform linux/amd64,linux/arm64 $_TAGS --push -f Dockerfile.gpu .
 
   # Cleanup
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
