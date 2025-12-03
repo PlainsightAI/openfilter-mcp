@@ -1,0 +1,72 @@
+# Docker build with GPU-accelerated index building via Cloud Run Jobs
+# Triggers: push to main, tag v*
+
+substitutions:
+  _DOCKERHUB_REPO: plainsightai/openfilter-mcp
+  _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
+  _REGION: us-central1
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/dockerhub-username/versions/latest
+      env: 'DOCKERHUB_USERNAME'
+    - versionName: projects/${PROJECT_ID}/secrets/dockerhub-token/versions/latest
+      env: 'DOCKERHUB_TOKEN'
+
+steps:
+  # Upload source, run GPU job, download index
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
+        gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
+
+        gcloud run jobs update index-builder --region=${_REGION} --command=bash \
+          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl; curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH=/root/.local/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
+
+        gcloud run jobs execute index-builder --region=${_REGION} --wait
+        gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
+        tar xzf /workspace/idx.tar.gz -C /workspace/
+
+  # Docker login, build, tag, push
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: ['-c', 'echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin']
+    secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cat > Dockerfile.gpu << 'EOF'
+        FROM python:3.12-slim
+        COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
+        RUN apt-get update && apt-get install -y git curl gcc g++ && rm -rf /var/lib/apt/lists/*
+        WORKDIR /app
+        COPY pyproject.toml README.md ./
+        COPY src/ src/
+        COPY code-context/ code-context/
+        COPY indexes/ indexes/
+        ENV CMAKE_ARGS="-DGGML_CUDA=off"
+        RUN uv sync --locked || uv sync
+        CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
+        EOF
+
+        docker buildx create --use --name multiarch
+        TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest"
+        [[ "${TAG_NAME}" =~ ^v ]] && TAGS="$TAGS -t ${_DOCKERHUB_REPO}:$${TAG_NAME#v}"
+        docker buildx build --platform linux/amd64,linux/arm64 $TAGS --push -f Dockerfile.gpu .
+
+  # Cleanup
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args: ['bash', '-c', 'gsutil -m rm -r gs://${_GCS_BUCKET}/builds/${BUILD_ID}/ || true']
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+
+timeout: '3600s'
