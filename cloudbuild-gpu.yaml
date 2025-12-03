@@ -55,14 +55,11 @@ steps:
         RUN uv sync --locked || uv sync
         CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
         EOF
-        docker build -t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -f Dockerfile.gpu .
 
-  - name: 'gcr.io/cloud-builders/docker'
-    entrypoint: 'bash'
-    args: ['-c', '[[ "${TAG_NAME}" =~ ^v ]] && docker tag ${_DOCKERHUB_REPO}:${SHORT_SHA} ${_DOCKERHUB_REPO}:$${TAG_NAME#v} || true']
-
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '--all-tags', '${_DOCKERHUB_REPO}']
+        docker buildx create --use --name multiarch
+        TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest"
+        [[ "${TAG_NAME}" =~ ^v ]] && TAGS="$TAGS -t ${_DOCKERHUB_REPO}:$${TAG_NAME#v}"
+        docker buildx build --platform linux/amd64,linux/arm64 $TAGS --push -f Dockerfile.gpu .
 
   # Cleanup
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
