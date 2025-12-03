@@ -19,7 +19,30 @@ index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
 [tool.uv]
-config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
+# Use pre-built wheels for llama-cpp-python based on platform:
+# - macOS (Darwin): Use Metal-accelerated wheels for Apple Silicon GPU support
+# - Linux: Use CUDA 12.4 wheels for NVIDIA GPU support
+# - CPU-only: Available via UV_INDEX_LLAMA_CPP_PYTHON_CPU=true for Docker/CI builds
+# This avoids needing to compile from source and handles platform differences automatically
+
+[[tool.uv.index]]
+name = "llama-cpp-python-cuda"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama-cpp-python-metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama-cpp-python-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
 
 [tool.uv.sources]
 code-context = { path = "./code-context" }
+llama-cpp-python = [
+    { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
+    { index = "llama-cpp-python-cuda", marker = "sys_platform == 'linux'" },
+]
