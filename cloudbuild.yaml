@@ -24,8 +24,10 @@ steps:
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
 
-        gcloud run jobs update index-builder --region=${_REGION} --command=bash \
-          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl; curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH=/root/.local/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
+        gcloud run jobs update index-builder --region=${_REGION} \
+          --image=gcr.io/google.com/cloudsdktool/cloud-sdk:slim \
+          --command=bash \
+          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake; curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH=/root/.local/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
         gcloud run jobs execute index-builder --region=${_REGION} --wait
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
@@ -68,5 +70,6 @@ steps:
 options:
   machineType: 'E2_HIGHCPU_8'
   diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
 
 timeout: '3600s'
