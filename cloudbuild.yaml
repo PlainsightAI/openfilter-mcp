@@ -12,11 +12,14 @@ availableSecrets:
       env: 'DOCKERHUB_USERNAME'
     - versionName: projects/${PROJECT_ID}/secrets/dockerhub-token/versions/latest
       env: 'DOCKERHUB_TOKEN'
+    - versionName: projects/${PROJECT_ID}/secrets/openfilter-mcp-hf-token/versions/latest
+      env: 'HF_TOKEN'
 
 steps:
   # Upload source, run GPU job, download index
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
+    secretEnv: ['HF_TOKEN']
     args:
       - '-c'
       - |
@@ -27,6 +30,7 @@ steps:
         gcloud run jobs update index-builder --region=${_REGION} \
           --image=nvidia/cuda:12.4.0-devel-ubuntu22.04 \
           --command=bash \
+          --set-env-vars=HF_TOKEN="$$HF_TOKEN" \
           --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
         gcloud run jobs execute index-builder --region=${_REGION} --wait
