@@ -5,7 +5,6 @@ description = "AST-aware code chunking and semantic indexing library"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "fast-plaid>=1.2.4.280",
     "fastmcp>=2.12.4",
     "gitpython>=3.1.45",
     "torch>=2.3.0",
@@ -30,11 +29,8 @@ requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv]
-# Use pre-built wheels for llama-cpp-python based on platform:
-# - macOS (Darwin): Use Metal-accelerated wheels for Apple Silicon GPU support
-# - Linux: Use CUDA 12.4 wheels for NVIDIA GPU support
-# - CPU-only: Available via --index llama-cpp-python-cpu for Docker/CI builds
-# This avoids needing to compile from source and handles platform differences automatically
+config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
+
 
 [[tool.uv.index]]
 name = "llama-cpp-python-cuda"
@@ -53,8 +49,8 @@ explicit = true
 
 [tool.uv.sources]
 llama-cpp-python = [
+    { git = "https://github.com/abetlen/llama-cpp-python", marker = "sys_platform == 'linux'" },
     { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
-    { index = "llama-cpp-python-cuda", marker = "sys_platform == 'linux'" },
 ]
 
 [dependency-groups]
