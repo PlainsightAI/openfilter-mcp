@@ -5,6 +5,7 @@ description = "AST-aware code chunking and semantic indexing library"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
+    "fast-plaid>=1.2.4.280",
     "fastmcp>=2.12.4",
     "gitpython>=3.1.45",
     "torch>=2.3.0",
@@ -28,36 +29,17 @@ dependencies = [
 requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
 
-[tool.uv]
-config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
-
-
-[[tool.uv.index]]
-name = "llama-cpp-python-cuda"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
-explicit = true
-
-[[tool.uv.index]]
-name = "llama-cpp-python-metal"
-url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
-explicit = true
-
-[[tool.uv.index]]
-name = "llama-cpp-python-cpu"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
-explicit = true
-
 [tool.uv.sources]
-llama-cpp-python = [
-    { git = "https://github.com/abetlen/llama-cpp-python", marker = "sys_platform == 'linux'" },
-    { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
-]
+llama-cpp-python = { git = "https://github.com/abetlen/llama-cpp-python" }
 
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
 ]
+
+[tool.uv]
+config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=off" } }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
