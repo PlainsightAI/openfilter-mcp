@@ -13,6 +13,9 @@ from openfilter_mcp.preindex_repos import (
 from openfilter_mcp.synthetic_video import (
     generate_synthetic_video as _generate_synthetic_video,
 )
+from openfilter_mcp.test_pipeline import (
+    run_test_against_pipeline as _run_test_against_pipeline,
+)
 
 # Create MCP server with bearer token authentication
 # Tokens are passed through to plainsight-api for validation
@@ -134,6 +137,49 @@ async def generate_synthetic_video(
         prompt=prompt,
         seed_video_id=seed_video_id,
         filters=filters,
+        wait_for_completion=wait_for_completion,
+    )
+
+
+@mcp.tool()
+async def run_test_against_pipeline(
+    project_id: str,
+    pipeline_id: str,
+    test_video_id: str,
+    golden_truth_id: Optional[str] = None,
+    wait_for_completion: bool = True,
+) -> Dict[str, Any]:
+    """Run a test video through a pipeline and compare against golden truth.
+
+    Triggers pipeline execution with a test video from the corpus and optionally
+    compares the output against golden truth data to calculate metrics.
+
+    Args:
+        project_id: UUID of the project containing the pipeline
+        pipeline_id: UUID of the pipeline to test
+        test_video_id: UUID of the test video from the corpus
+        golden_truth_id: Optional UUID of golden truth for comparison.
+            When provided, metrics (precision, recall, IoU, etc.) are calculated.
+        wait_for_completion: If True (default), poll until the test run completes.
+            If False, return immediately with the run_id for later status checks.
+
+    Returns:
+        dict containing:
+            - run_id: UUID of the test run
+            - status: Current status (pending, running, completed, failed)
+            - pipeline_output_video_id: UUID of output video (when completed)
+            - comparison_results: Metrics when golden_truth_id is provided:
+                - precision: float (0-1)
+                - recall: float (0-1)
+                - f1: float (0-1)
+                - iou: float (0-1) - Intersection over Union
+                - frame_results: list of per-frame comparison data
+    """
+    return await _run_test_against_pipeline(
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+        test_video_id=test_video_id,
+        golden_truth_id=golden_truth_id,
         wait_for_completion=wait_for_completion,
     )
 
