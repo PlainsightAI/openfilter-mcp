@@ -15,7 +15,7 @@ from code_context.indexing import INDEXES_DIR
 from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
 
-from openfilter_mcp.auth import async_api_client, create_token_verifier
+from openfilter_mcp.auth import async_api_client
 from openfilter_mcp.golden_truth import add_golden_truth as _add_golden_truth
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 from openfilter_mcp.synthetic_video import (
@@ -23,9 +23,8 @@ from openfilter_mcp.synthetic_video import (
     poll_until_complete as _poll_synthetic_video_job,
 )
 
-# Create MCP server with bearer token authentication
-# Tokens are passed through to plainsight-api for validation
-mcp = FastMCP(name="OpenFilter MCP", auth=create_token_verifier())
+# Create MCP server
+mcp = FastMCP(name="OpenFilter MCP")
 
 
 def get_latest_index_name() -> str:
