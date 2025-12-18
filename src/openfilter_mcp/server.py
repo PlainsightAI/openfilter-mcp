@@ -1,18 +1,22 @@
+"""OpenFilter MCP Server.
+
+Provides tools for interacting with the Plainsight API for:
+- Code semantic search
+- Video corpus management
+- Test management
+- Synthetic video generation
+"""
+
+import asyncio
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from code_context.indexing import INDEXES_DIR
 from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
 
-from openfilter_mcp.auth import create_token_verifier
-from openfilter_mcp.preindex_repos import (
-    MONOREPO_CLONE_DIR,  # Import MONOREPO_CLONE_DIR
-)
-from openfilter_mcp.synthetic_video import (
-    generate_synthetic_video as _generate_synthetic_video,
-)
+from openfilter_mcp.auth import async_api_client, create_token_verifier
+from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
 # Create MCP server with bearer token authentication
 # Tokens are passed through to plainsight-api for validation
@@ -38,6 +42,11 @@ def get_latest_index_name() -> str:
 
 
 LATEST_INDEX_NAME = get_latest_index_name()
+
+
+# =============================================================================
+# Code Search Tools
+# =============================================================================
 
 
 @mcp.tool()
@@ -71,7 +80,7 @@ def _is_subpath(path, parent_directory):
 
 
 def _real_path(path):
-    "Check that a path resolution is secure and valid"
+    """Check that a path resolution is secure and valid."""
     path = os.path.join(MONOREPO_CLONE_DIR, path)
     if _is_subpath(path, MONOREPO_CLONE_DIR):
         return path
@@ -89,6 +98,217 @@ def read_file(filepath: str, start_line: int = 0, line_count: int = 100) -> str:
     lines = content.splitlines()
     content = "\n".join(lines[start_line : start_line + line_count])
     return content
+
+
+# =============================================================================
+# Video Corpus Tools
+# =============================================================================
+
+
+@mcp.tool()
+async def list_video_corpus(
+    project_id: str,
+    source: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """List videos in the corpus for a project.
+
+    Args:
+        project_id: The ID of the project to list videos for.
+        source: Optional filter by source type (uploaded, recorded, synthetic).
+        limit: Maximum number of videos to return (default 50).
+        offset: Number of videos to skip for pagination (default 0).
+
+    Returns:
+        Dictionary containing the list of videos and pagination info.
+    """
+    params: Dict[str, Any] = {
+        "limit": limit,
+        "offset": offset,
+    }
+    if source is not None:
+        params["source"] = source
+
+    async with async_api_client() as client:
+        response = await client.get(
+            f"/projects/{project_id}/videos",
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@mcp.tool()
+async def get_video(
+    project_id: str,
+    video_id: str,
+    include_download_url: bool = False,
+) -> Dict[str, Any]:
+    """Get video details and optionally a signed download URL.
+
+    Args:
+        project_id: The project ID containing the video.
+        video_id: The ID of the video to retrieve.
+        include_download_url: If True, includes a signed download URL in the response.
+
+    Returns:
+        JSON object with video metadata (id, name, status, duration, etc.)
+        and optionally a signed download_url field.
+    """
+    async with async_api_client() as client:
+        response = await client.get(
+            f"/projects/{project_id}/videos/{video_id}"
+        )
+        response.raise_for_status()
+        video_data = response.json()
+
+        if include_download_url:
+            download_response = await client.get(
+                f"/projects/{project_id}/videos/{video_id}/download"
+            )
+            download_response.raise_for_status()
+            download_data = download_response.json()
+            video_data["download_url"] = download_data.get("url")
+
+        return video_data
+
+
+# =============================================================================
+# Test Management Tools
+# =============================================================================
+
+
+@mcp.tool()
+async def list_tests(
+    project_id: str,
+    pipeline_id: Optional[str] = None,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """List test definitions for a project with optional filtering.
+
+    Args:
+        project_id: Project ID to list tests for.
+        pipeline_id: Optional pipeline ID to filter tests by.
+        limit: Maximum number of tests to return (default: 50).
+
+    Returns:
+        A dictionary containing the list of tests and pagination info.
+    """
+    params: Dict[str, Any] = {"limit": limit}
+    if pipeline_id is not None:
+        params["pipeline_id"] = pipeline_id
+
+    async with async_api_client() as client:
+        response = await client.get(
+            f"/projects/{project_id}/tests",
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@mcp.tool()
+async def create_test(
+    project_id: str,
+    pipeline_id: str,
+    name: str,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a test definition for a pipeline.
+
+    Args:
+        project_id: The ID of the project.
+        pipeline_id: The ID of the pipeline to test.
+        name: Name of the test.
+        description: Optional description of the test.
+
+    Returns:
+        The created test object.
+    """
+    payload: Dict[str, Any] = {
+        "pipeline_id": pipeline_id,
+        "name": name,
+    }
+    if description is not None:
+        payload["description"] = description
+
+    async with async_api_client() as client:
+        response = await client.post(
+            f"/projects/{project_id}/tests",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@mcp.tool()
+async def get_test(
+    project_id: str,
+    test_id: str,
+) -> Dict[str, Any]:
+    """Get details of a specific test.
+
+    Args:
+        project_id: The project ID containing the test.
+        test_id: The ID of the test to retrieve.
+
+    Returns:
+        The test object with its assertions and golden truth files.
+    """
+    async with async_api_client() as client:
+        response = await client.get(
+            f"/projects/{project_id}/tests/{test_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@mcp.tool()
+async def add_assertion(
+    project_id: str,
+    test_id: str,
+    assertion_type: str,
+    label: str,
+    operator: str,
+    value: Any,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Add an assertion to a test.
+
+    Args:
+        project_id: The project ID containing the test.
+        test_id: The ID of the test.
+        assertion_type: Type of assertion (e.g., 'count', 'presence', 'absence').
+        label: The label/class to assert on.
+        operator: Comparison operator (e.g., 'eq', 'gt', 'lt', 'gte', 'lte').
+        value: The expected value.
+        description: Optional description of the assertion.
+
+    Returns:
+        The created assertion object.
+    """
+    payload: Dict[str, Any] = {
+        "type": assertion_type,
+        "label": label,
+        "operator": operator,
+        "value": value,
+    }
+    if description is not None:
+        payload["description"] = description
+
+    async with async_api_client() as client:
+        response = await client.post(
+            f"/projects/{project_id}/tests/{test_id}/assertions",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+# =============================================================================
+# Synthetic Video Generation Tools
+# =============================================================================
 
 
 @mcp.tool()
@@ -126,20 +346,67 @@ async def generate_synthetic_video(
         - output_gcs_uri: GCS URI for the generated video (when completed)
         - error_message: Error details (if failed)
     """
-    return await _generate_synthetic_video(
-        project_id=project_id,
-        frame_count=frame_count,
-        resolution_width=resolution_width,
-        resolution_height=resolution_height,
-        prompt=prompt,
-        seed_video_id=seed_video_id,
-        filters=filters,
-        wait_for_completion=wait_for_completion,
+    payload: Dict[str, Any] = {
+        "project_id": project_id,
+        "frame_count": frame_count,
+        "resolution": {
+            "width": resolution_width,
+            "height": resolution_height,
+        },
+    }
+    if prompt is not None:
+        payload["prompt"] = prompt
+    if seed_video_id is not None:
+        payload["seed_video_id"] = seed_video_id
+    if filters is not None:
+        payload["filters"] = filters
+
+    async with async_api_client() as client:
+        response = await client.post(
+            f"/projects/{project_id}/synthetic-videos",
+            json=payload,
+        )
+        response.raise_for_status()
+        job = response.json()
+
+    if wait_for_completion:
+        job = await _poll_synthetic_video_job(project_id, job["id"])
+
+    return job
+
+
+async def _poll_synthetic_video_job(
+    project_id: str,
+    job_id: str,
+    poll_interval: float = 30.0,
+    max_wait: float = 600.0,
+) -> Dict[str, Any]:
+    """Poll a synthetic video job until it completes or times out."""
+    elapsed = 0.0
+    job = {}
+    while elapsed < max_wait:
+        async with async_api_client() as client:
+            response = await client.get(
+                f"/projects/{project_id}/synthetic-videos/{job_id}"
+            )
+            response.raise_for_status()
+            job = response.json()
+
+        status = job.get("status", "").lower()
+        if status in ("completed", "complete", "done", "failed", "error"):
+            return job
+
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+    raise TimeoutError(
+        f"Job {job_id} did not complete within {max_wait} seconds. "
+        f"Last status: {job.get('status')}"
     )
 
 
 def main():
-    # Ensure necessary directories exist (these are also handled by code-context, but good to have)
+    # Ensure necessary directories exist
     os.makedirs(INDEXES_DIR, exist_ok=True)
     mcp.run(transport="http", port=3000, host="0.0.0.0")
 
