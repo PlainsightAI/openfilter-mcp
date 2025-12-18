@@ -51,8 +51,9 @@ COPY src/ src/
 COPY README.md ./
 COPY code-context/ code-context/
 
-# Copy the built index from the indexer stage
+# Copy the built index and clones from the indexer stage
 COPY --from=indexer /app/indexes/ indexes/
+COPY --from=indexer /app/openfilter_repos_clones/ openfilter_repos_clones/
 
 # Install dependencies (CPU-only for serving)
 # Use CPU-only pre-built wheels from the llama-cpp-python-cpu index
