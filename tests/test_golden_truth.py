@@ -19,13 +19,13 @@ class TestAddGoldenTruthUnit:
 
     @pytest.mark.asyncio
     async def test_creates_golden_truth_with_required_fields(self):
-        """Should create golden truth with test_id, video_id, and annotations."""
+        """Should create golden truth with test_id, video_file_reference, and storage_path."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "id": "golden-truth-123",
             "test_id": "test-456",
-            "video_id": "video-789",
-            "annotations": {"labels": ["person", "car"]},
+            "video_file_reference": "video-789",
+            "storage_path": "gs://bucket/path/to/file.json",
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -39,31 +39,32 @@ class TestAddGoldenTruthUnit:
         ):
             result = await add_golden_truth(
                 test_id="test-456",
-                video_id="video-789",
-                annotations={"labels": ["person", "car"]},
+                video_file_reference="video-789",
+                storage_path="gs://bucket/path/to/file.json",
             )
 
         assert result["id"] == "golden-truth-123"
         assert result["test_id"] == "test-456"
-        assert result["video_id"] == "video-789"
+        assert result["video_file_reference"] == "video-789"
         mock_client.post.assert_called_once_with(
             "/tests/test-456/golden-truth-files",
             json={
-                "video_id": "video-789",
-                "annotations": {"labels": ["person", "car"]},
+                "test_id": "test-456",
+                "video_file_reference": "video-789",
+                "storage_path": "gs://bucket/path/to/file.json",
             },
         )
 
     @pytest.mark.asyncio
-    async def test_creates_golden_truth_with_description(self):
-        """Should include description in payload when provided."""
+    async def test_creates_golden_truth_with_metadata(self):
+        """Should include metadata in payload when provided."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "id": "golden-truth-with-desc",
+            "id": "golden-truth-with-meta",
             "test_id": "test-456",
-            "video_id": "video-789",
-            "annotations": {"bboxes": []},
-            "description": "Ground truth for parking lot scene",
+            "video_file_reference": "video-789",
+            "storage_path": "gs://bucket/path/to/file.json",
+            "metadata": {"source": "annotator"},
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -77,26 +78,27 @@ class TestAddGoldenTruthUnit:
         ):
             result = await add_golden_truth(
                 test_id="test-456",
-                video_id="video-789",
-                annotations={"bboxes": []},
-                description="Ground truth for parking lot scene",
+                video_file_reference="video-789",
+                storage_path="gs://bucket/path/to/file.json",
+                metadata={"source": "annotator"},
             )
 
-        assert result["description"] == "Ground truth for parking lot scene"
+        assert result["metadata"] == {"source": "annotator"}
         mock_client.post.assert_called_once_with(
             "/tests/test-456/golden-truth-files",
             json={
-                "video_id": "video-789",
-                "annotations": {"bboxes": []},
-                "description": "Ground truth for parking lot scene",
+                "test_id": "test-456",
+                "video_file_reference": "video-789",
+                "storage_path": "gs://bucket/path/to/file.json",
+                "metadata": {"source": "annotator"},
             },
         )
 
     @pytest.mark.asyncio
-    async def test_omits_description_when_none(self):
-        """Should not include description in payload when None."""
+    async def test_omits_metadata_when_none(self):
+        """Should not include metadata in payload when None."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {"id": "gt-no-desc"}
+        mock_response.json.return_value = {"id": "gt-no-meta"}
         mock_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
@@ -109,68 +111,15 @@ class TestAddGoldenTruthUnit:
         ):
             await add_golden_truth(
                 test_id="test-123",
-                video_id="video-456",
-                annotations={},
-                description=None,
+                video_file_reference="video-456",
+                storage_path="gs://bucket/file.json",
+                metadata=None,
             )
 
-        # Verify description is not in the payload
+        # Verify metadata is not in the payload
         call_args = mock_client.post.call_args
         payload = call_args[1]["json"]
-        assert "description" not in payload
-
-    @pytest.mark.asyncio
-    async def test_handles_complex_annotations(self):
-        """Should handle complex annotation structures with frames and bboxes."""
-        complex_annotations = {
-            "frames": [
-                {
-                    "frame_number": 0,
-                    "objects": [
-                        {
-                            "label": "person",
-                            "bbox": [100, 200, 150, 300],
-                            "confidence": 1.0,
-                        },
-                        {
-                            "label": "car",
-                            "bbox": [400, 300, 600, 500],
-                            "confidence": 1.0,
-                        },
-                    ],
-                }
-            ],
-            "metadata": {
-                "annotator": "human",
-                "version": "1.0",
-            },
-        }
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "id": "complex-gt",
-            "annotations": complex_annotations,
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch(
-            "openfilter_mcp.golden_truth.async_api_client", return_value=mock_client
-        ):
-            result = await add_golden_truth(
-                test_id="test-complex",
-                video_id="video-complex",
-                annotations=complex_annotations,
-            )
-
-        assert result["annotations"] == complex_annotations
-        call_args = mock_client.post.call_args
-        payload = call_args[1]["json"]
-        assert payload["annotations"] == complex_annotations
+        assert "metadata" not in payload
 
     @pytest.mark.asyncio
     async def test_propagates_http_errors(self):
@@ -193,8 +142,8 @@ class TestAddGoldenTruthUnit:
             with pytest.raises(httpx.HTTPStatusError):
                 await add_golden_truth(
                     test_id="nonexistent-test",
-                    video_id="video-123",
-                    annotations={},
+                    video_file_reference="video-123",
+                    storage_path="gs://bucket/file.json",
                 )
 
     @pytest.mark.asyncio
@@ -218,8 +167,8 @@ class TestAddGoldenTruthUnit:
             with pytest.raises(httpx.HTTPStatusError):
                 await add_golden_truth(
                     test_id="test-123",
-                    video_id="invalid-video",
-                    annotations={"invalid": "format"},
+                    video_file_reference="invalid-video",
+                    storage_path="invalid-path",
                 )
 
     @pytest.mark.asyncio
@@ -241,8 +190,8 @@ class TestAddGoldenTruthUnit:
         ):
             await add_golden_truth(
                 test_id=test_id,
-                video_id="video-id",
-                annotations={},
+                video_file_reference="video-id",
+                storage_path="gs://bucket/file.json",
             )
 
         # Verify the endpoint uses the correct format
@@ -262,9 +211,9 @@ class TestAddGoldenTruthFunctional:
 
     These tests require:
     - Valid authentication via psctl login or PLAINSIGHT_API_TOKEN env var
-    - TEST_PROJECT_ID environment variable set to a valid project
     - TEST_TEST_ID environment variable set to a valid test
-    - TEST_VIDEO_ID environment variable set to a valid video in the corpus
+    - TEST_VIDEO_FILE_REFERENCE environment variable set to a valid video reference
+    - TEST_STORAGE_PATH environment variable set to a valid storage path
     """
 
     @pytest.fixture
@@ -276,24 +225,29 @@ class TestAddGoldenTruthFunctional:
         return test_id
 
     @pytest.fixture
-    def video_id(self):
-        """Get video ID from environment."""
-        video_id = os.getenv("TEST_VIDEO_ID")
-        if not video_id:
-            pytest.skip("TEST_VIDEO_ID environment variable not set")
-        return video_id
+    def video_file_reference(self):
+        """Get video file reference from environment."""
+        video_file_reference = os.getenv("TEST_VIDEO_FILE_REFERENCE")
+        if not video_file_reference:
+            pytest.skip("TEST_VIDEO_FILE_REFERENCE environment variable not set")
+        return video_file_reference
+
+    @pytest.fixture
+    def storage_path(self):
+        """Get storage path from environment."""
+        storage_path = os.getenv("TEST_STORAGE_PATH")
+        if not storage_path:
+            pytest.skip("TEST_STORAGE_PATH environment variable not set")
+        return storage_path
 
     @pytest.mark.asyncio
-    async def test_add_golden_truth_live(self, test_id, video_id):
+    async def test_add_golden_truth_live(self, test_id, video_file_reference, storage_path):
         """Functional test: add golden truth to the live API."""
         result = await add_golden_truth(
             test_id=test_id,
-            video_id=video_id,
-            annotations={
-                "labels": ["test_label"],
-                "metadata": {"source": "functional_test"},
-            },
-            description="Functional test golden truth",
+            video_file_reference=video_file_reference,
+            storage_path=storage_path,
+            metadata={"source": "functional_test"},
         )
 
         # Verify response structure

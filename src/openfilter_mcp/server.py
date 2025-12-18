@@ -227,27 +227,31 @@ async def get_video(
 
 @mcp.tool()
 async def list_tests(
-    project_id: str,
-    pipeline_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    filter_pipeline_id: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> Dict[str, Any]:
-    """List test definitions for a project with optional filtering.
+    """List test definitions with optional filtering.
 
     Args:
-        project_id: Project ID to list tests for.
-        pipeline_id: Optional pipeline ID to filter tests by.
+        project_id: Optional project ID to filter tests by.
+        filter_pipeline_id: Optional filter pipeline ID to filter tests by.
         limit: Maximum number of tests to return (default: 50).
+        offset: Number of tests to skip for pagination (default: 0).
 
     Returns:
-        A dictionary containing the list of tests and pagination info.
+        A list of test objects.
     """
-    params: Dict[str, Any] = {"limit": limit}
-    if pipeline_id is not None:
-        params["pipeline_id"] = pipeline_id
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+    if project_id is not None:
+        params["project_id"] = project_id
+    if filter_pipeline_id is not None:
+        params["filter_pipeline_id"] = filter_pipeline_id
 
     async with async_api_client() as client:
         response = await client.get(
-            f"/projects/{project_id}/tests",
+            "/tests",
             params=params,
         )
         response.raise_for_status()
@@ -257,31 +261,36 @@ async def list_tests(
 @mcp.tool()
 async def create_test(
     project_id: str,
-    pipeline_id: str,
+    filter_pipeline_id: str,
     name: str,
     description: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create a test definition for a pipeline.
+    """Create a test definition for a filter pipeline.
 
     Args:
-        project_id: The ID of the project.
-        pipeline_id: The ID of the pipeline to test.
+        project_id: The ID of the project this test belongs to.
+        filter_pipeline_id: The ID of the filter pipeline to test.
         name: Name of the test.
         description: Optional description of the test.
+        metadata: Optional metadata for the test.
 
     Returns:
         The created test object.
     """
     payload: Dict[str, Any] = {
-        "pipeline_id": pipeline_id,
+        "project_id": project_id,
+        "filter_pipeline_id": filter_pipeline_id,
         "name": name,
     }
     if description is not None:
         payload["description"] = description
+    if metadata is not None:
+        payload["metadata"] = metadata
 
     async with async_api_client() as client:
         response = await client.post(
-            f"/projects/{project_id}/tests",
+            "/tests",
             json=payload,
         )
         response.raise_for_status()
@@ -290,13 +299,11 @@ async def create_test(
 
 @mcp.tool()
 async def get_test(
-    project_id: str,
     test_id: str,
 ) -> Dict[str, Any]:
     """Get details of a specific test.
 
     Args:
-        project_id: The project ID containing the test.
         test_id: The ID of the test to retrieve.
 
     Returns:
@@ -304,7 +311,7 @@ async def get_test(
     """
     async with async_api_client() as client:
         response = await client.get(
-            f"/projects/{project_id}/tests/{test_id}"
+            f"/tests/{test_id}"
         )
         response.raise_for_status()
         return response.json()
@@ -312,40 +319,36 @@ async def get_test(
 
 @mcp.tool()
 async def add_assertion(
-    project_id: str,
     test_id: str,
+    name: str,
     assertion_type: str,
-    label: str,
-    operator: str,
-    value: Any,
+    assertion_config: Dict[str, Any],
     description: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Add an assertion to a test.
 
     Args:
-        project_id: The project ID containing the test.
         test_id: The ID of the test.
+        name: Name of the assertion.
         assertion_type: Type of assertion (e.g., 'count', 'presence', 'absence').
-        label: The label/class to assert on.
-        operator: Comparison operator (e.g., 'eq', 'gt', 'lt', 'gte', 'lte').
-        value: The expected value.
+        assertion_config: Configuration for the assertion (e.g., {"label": "person", "operator": "gt", "value": 5}).
         description: Optional description of the assertion.
 
     Returns:
         The created assertion object.
     """
     payload: Dict[str, Any] = {
-        "type": assertion_type,
-        "label": label,
-        "operator": operator,
-        "value": value,
+        "test_id": test_id,
+        "name": name,
+        "assertion_type": assertion_type,
+        "assertion_config": assertion_config,
     }
     if description is not None:
         payload["description"] = description
 
     async with async_api_client() as client:
         response = await client.post(
-            f"/projects/{project_id}/tests/{test_id}/assertions",
+            f"/tests/{test_id}/assertions",
             json=payload,
         )
         response.raise_for_status()
@@ -355,22 +358,22 @@ async def add_assertion(
 @mcp.tool()
 async def add_golden_truth(
     test_id: str,
-    video_id: str,
-    annotations: Dict[str, Any],
-    description: Optional[str] = None,
+    video_file_reference: str,
+    storage_path: str,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Associate a golden truth file with a test.
 
     Args:
         test_id: The test ID to add golden truth to.
-        video_id: The video ID from the corpus that this golden truth is for.
-        annotations: The ground truth annotations (labels, bounding boxes, etc.)
-        description: Optional description.
+        video_file_reference: Reference to the video file.
+        storage_path: Storage path where the golden truth file is stored.
+        metadata: Optional metadata for the golden truth file.
 
     Returns:
         The created golden truth file object.
     """
-    return await _add_golden_truth(test_id, video_id, annotations, description)
+    return await _add_golden_truth(test_id, video_file_reference, storage_path, metadata)
 
 
 # =============================================================================

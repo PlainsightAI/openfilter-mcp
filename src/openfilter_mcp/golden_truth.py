@@ -10,27 +10,28 @@ from openfilter_mcp.auth import async_api_client
 
 async def add_golden_truth(
     test_id: str,
-    video_id: str,
-    annotations: Dict[str, Any],
-    description: Optional[str] = None,
+    video_file_reference: str,
+    storage_path: str,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Associate a golden truth file with a test.
 
     Args:
         test_id: The test ID to add golden truth to.
-        video_id: The video ID from the corpus that this golden truth is for.
-        annotations: The ground truth annotations (labels, bounding boxes, etc.)
-        description: Optional description.
+        video_file_reference: Reference to the video file.
+        storage_path: Storage path where the golden truth file is stored.
+        metadata: Optional metadata for the golden truth file.
 
     Returns:
         The created golden truth file object.
     """
     payload: Dict[str, Any] = {
-        "video_id": video_id,
-        "annotations": annotations,
+        "test_id": test_id,
+        "video_file_reference": video_file_reference,
+        "storage_path": storage_path,
     }
-    if description is not None:
-        payload["description"] = description
+    if metadata is not None:
+        payload["metadata"] = metadata
 
     async with async_api_client() as client:
         response = await client.post(
