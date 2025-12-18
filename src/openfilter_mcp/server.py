@@ -16,7 +16,12 @@ from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
 
 from openfilter_mcp.auth import async_api_client, create_token_verifier
+from openfilter_mcp.golden_truth import add_golden_truth as _add_golden_truth
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
+from openfilter_mcp.synthetic_video import (
+    generate_synthetic_video as _generate_synthetic_video,
+    poll_until_complete as _poll_synthetic_video_job,
+)
 
 # Create MCP server with bearer token authentication
 # Tokens are passed through to plainsight-api for validation
@@ -137,6 +142,47 @@ async def list_video_corpus(
         )
         response.raise_for_status()
         return response.json()
+
+
+@mcp.tool()
+async def upload_video(
+    project_id: str,
+    file_path: str,
+    title: str,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upload a video file to the project's video corpus.
+
+    Args:
+        project_id: The project ID to upload to.
+        file_path: Local path to the video file.
+        title: Title for the uploaded video.
+        description: Optional description.
+
+    Returns:
+        The created video object with id, gcs_uri, etc.
+    """
+    import os as os_module
+
+    if not os_module.path.exists(file_path):
+        raise FileNotFoundError(f"Video file not found: {file_path}")
+
+    filename = os_module.path.basename(file_path)
+
+    async with async_api_client() as client:
+        with open(file_path, "rb") as video_file:
+            files = {"file": (filename, video_file, "video/mp4")}
+            data: Dict[str, str] = {"title": title}
+            if description is not None:
+                data["description"] = description
+
+            response = await client.post(
+                f"/projects/{project_id}/videos/upload",
+                files=files,
+                data=data,
+            )
+            response.raise_for_status()
+            return response.json()
 
 
 @mcp.tool()
@@ -306,6 +352,27 @@ async def add_assertion(
         return response.json()
 
 
+@mcp.tool()
+async def add_golden_truth(
+    test_id: str,
+    video_id: str,
+    annotations: Dict[str, Any],
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Associate a golden truth file with a test.
+
+    Args:
+        test_id: The test ID to add golden truth to.
+        video_id: The video ID from the corpus that this golden truth is for.
+        annotations: The ground truth annotations (labels, bounding boxes, etc.)
+        description: Optional description.
+
+    Returns:
+        The created golden truth file object.
+    """
+    return await _add_golden_truth(test_id, video_id, annotations, description)
+
+
 # =============================================================================
 # Synthetic Video Generation Tools
 # =============================================================================
@@ -346,62 +413,15 @@ async def generate_synthetic_video(
         - output_gcs_uri: GCS URI for the generated video (when completed)
         - error_message: Error details (if failed)
     """
-    payload: Dict[str, Any] = {
-        "project_id": project_id,
-        "frame_count": frame_count,
-        "resolution": {
-            "width": resolution_width,
-            "height": resolution_height,
-        },
-    }
-    if prompt is not None:
-        payload["prompt"] = prompt
-    if seed_video_id is not None:
-        payload["seed_video_id"] = seed_video_id
-    if filters is not None:
-        payload["filters"] = filters
-
-    async with async_api_client() as client:
-        response = await client.post(
-            f"/projects/{project_id}/synthetic-videos",
-            json=payload,
-        )
-        response.raise_for_status()
-        job = response.json()
-
-    if wait_for_completion:
-        job = await _poll_synthetic_video_job(project_id, job["id"])
-
-    return job
-
-
-async def _poll_synthetic_video_job(
-    project_id: str,
-    job_id: str,
-    poll_interval: float = 30.0,
-    max_wait: float = 600.0,
-) -> Dict[str, Any]:
-    """Poll a synthetic video job until it completes or times out."""
-    elapsed = 0.0
-    job = {}
-    while elapsed < max_wait:
-        async with async_api_client() as client:
-            response = await client.get(
-                f"/projects/{project_id}/synthetic-videos/{job_id}"
-            )
-            response.raise_for_status()
-            job = response.json()
-
-        status = job.get("status", "").lower()
-        if status in ("completed", "complete", "done", "failed", "error"):
-            return job
-
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-    raise TimeoutError(
-        f"Job {job_id} did not complete within {max_wait} seconds. "
-        f"Last status: {job.get('status')}"
+    return await _generate_synthetic_video(
+        project_id=project_id,
+        frame_count=frame_count,
+        resolution_width=resolution_width,
+        resolution_height=resolution_height,
+        prompt=prompt,
+        seed_video_id=seed_video_id,
+        filters=filters,
+        wait_for_completion=wait_for_completion,
     )
 
 
