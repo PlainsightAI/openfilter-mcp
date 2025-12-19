@@ -17,7 +17,6 @@ from typing import Any, AsyncGenerator, Dict, Generator, Optional
 
 import httpx
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
-from fastmcp.server.dependencies import get_access_token
 
 
 # Configuration
@@ -26,6 +25,17 @@ PLAINSIGHT_API_URL = os.getenv("PLAINSIGHT_API_URL", "https://api.prod.plainsigh
 # psctl token file location (follows XDG spec)
 PSCTL_APP_NAME = "plainsight"
 PSCTL_TOKEN_FILENAME = "token"
+
+# Cached token to avoid file I/O races in concurrent async calls
+_cached_token: Optional[str] = None
+_cached_token_expiry: Optional[datetime] = None
+
+
+def _reset_token_cache() -> None:
+    """Reset the token cache. Used for testing."""
+    global _cached_token, _cached_token_expiry
+    _cached_token = None
+    _cached_token_expiry = None
 
 
 class AuthenticationError(Exception):
@@ -148,6 +158,9 @@ def _save_token_data(token_data: Dict[str, Any]) -> bool:
 def read_psctl_token() -> Optional[str]:
     """Read the access token from the psctl CLI configuration.
 
+    Uses a module-level cache to avoid file I/O races when called concurrently
+    from async code. The cache is invalidated when the token is close to expiry.
+
     This allows users who have authenticated via `psctl login` to use the MCP
     server without additional configuration. If the token is expired but a
     refresh token is available, it will attempt to refresh automatically.
@@ -155,6 +168,13 @@ def read_psctl_token() -> Optional[str]:
     Returns:
         The access token string if available and valid, None otherwise.
     """
+    global _cached_token, _cached_token_expiry
+
+    # Return cached token if valid and not expiring soon
+    if _cached_token and _cached_token_expiry:
+        if _cached_token_expiry > datetime.now(timezone.utc) + timedelta(minutes=5):
+            return _cached_token
+
     token_path = get_psctl_token_path()
 
     if not token_path.exists():
@@ -174,6 +194,7 @@ def read_psctl_token() -> Optional[str]:
 
         # Check expiry if present
         expiry_str = token_data.get("expiry")
+        expiry: Optional[datetime] = None
         if expiry_str:
             try:
                 # Parse ISO format datetime
@@ -187,12 +208,26 @@ def read_psctl_token() -> Optional[str]:
                         if new_token_data:
                             # Save the new token data
                             _save_token_data(new_token_data)
-                            return new_token_data.get("access_token")
-                    # Refresh failed or no refresh token
-                    return None
+                            access_token = new_token_data.get("access_token")
+                            # Update expiry from new token
+                            new_expiry_str = new_token_data.get("expiry")
+                            if new_expiry_str:
+                                expiry = datetime.fromisoformat(
+                                    new_expiry_str.replace("Z", "+00:00")
+                                )
+                        else:
+                            # Refresh failed
+                            return None
+                    else:
+                        # No refresh token available
+                        return None
             except (ValueError, TypeError):
                 # If we can't parse expiry, still try to use the token
                 pass
+
+        # Cache the token
+        _cached_token = access_token
+        _cached_token_expiry = expiry
 
         return access_token
 
@@ -204,10 +239,7 @@ def create_token_verifier() -> DebugTokenVerifier:
     """Create a token verifier that passes through all bearer tokens.
 
     We use DebugTokenVerifier with a permissive validator because plainsight-api
-    will perform the actual token validation. This allows us to:
-    1. Extract the bearer token from incoming requests
-    2. Make it available to tools via get_access_token()
-    3. Forward it to plainsight-api for validation
+    will perform the actual token validation.
 
     Returns:
         DebugTokenVerifier configured for token passthrough.
@@ -228,35 +260,16 @@ def create_token_verifier() -> DebugTokenVerifier:
 
 
 def get_auth_token() -> Optional[str]:
-    """Get the bearer token from the current request context or psctl config.
+    """Get the bearer token from psctl config.
 
-    Token resolution order:
-    1. Bearer token from the MCP request (via get_access_token())
-    2. Token from psctl CLI config (~/.config/plainsight/token)
-
+    Reads token from psctl CLI config (~/.config/plainsight/token).
     This allows users who have authenticated via `psctl login` to use the MCP
-    server without configuring headers manually.
+    server without additional configuration.
 
     Returns:
         The raw bearer token string, or None if not authenticated.
-
-    Raises:
-        RuntimeError: If called outside of a request context.
     """
-    # First, try to get token from request context
-    try:
-        access_token = get_access_token()
-        if access_token and hasattr(access_token, 'token'):
-            return access_token.token
-    except Exception:
-        pass
-
-    # Fallback to psctl token file
-    psctl_token = read_psctl_token()
-    if psctl_token:
-        return psctl_token
-
-    return None
+    return read_psctl_token()
 
 
 def get_api_client(timeout: float = 30.0) -> httpx.Client:

@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -12,6 +12,7 @@ import pytest
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
     AuthenticationError,
+    _reset_token_cache,
     create_token_verifier,
     decode_jwt_payload,
     get_api_client,
@@ -21,6 +22,14 @@ from openfilter_mcp.auth import (
     get_psctl_token_path,
     read_psctl_token,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_cache():
+    """Reset the token cache before and after each test."""
+    _reset_token_cache()
+    yield
+    _reset_token_cache()
 
 
 class TestCreateTokenVerifier:
@@ -176,62 +185,19 @@ class TestReadPsctlToken:
 class TestGetAuthToken:
     """Tests for get_auth_token function."""
 
-    def test_returns_none_outside_request_context_no_psctl(self):
-        """Should return None when no request context and no psctl token."""
+    def test_returns_none_when_no_psctl_token(self):
+        """Should return None when no psctl token available."""
         with patch("openfilter_mcp.auth.read_psctl_token", return_value=None):
             token = get_auth_token()
             assert token is None
 
-    def test_returns_token_from_access_token(self):
-        """Should return token from AccessToken when available."""
-        mock_access_token = MagicMock()
-        mock_access_token.token = "test-bearer-token"
-
+    def test_returns_psctl_token(self):
+        """Should return token from psctl config."""
         with patch(
-            "openfilter_mcp.auth.get_access_token", return_value=mock_access_token
+            "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
         ):
             token = get_auth_token()
-            assert token == "test-bearer-token"
-
-    def test_falls_back_to_psctl_token(self):
-        """Should fallback to psctl token when no request token."""
-        with patch(
-            "openfilter_mcp.auth.get_access_token", side_effect=Exception("No context")
-        ):
-            with patch(
-                "openfilter_mcp.auth.read_psctl_token",
-                return_value="psctl-fallback-token",
-            ):
-                token = get_auth_token()
-                assert token == "psctl-fallback-token"
-
-    def test_prefers_request_token_over_psctl(self):
-        """Should prefer request token over psctl token."""
-        mock_access_token = MagicMock()
-        mock_access_token.token = "request-token"
-
-        with patch(
-            "openfilter_mcp.auth.get_access_token", return_value=mock_access_token
-        ):
-            with patch(
-                "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
-            ):
-                token = get_auth_token()
-                assert token == "request-token"
-
-    def test_returns_none_when_access_token_has_no_token_attr(self):
-        """Should fallback to psctl when AccessToken has no token attribute."""
-        mock_access_token = MagicMock(spec=[])  # No attributes
-
-        with patch(
-            "openfilter_mcp.auth.get_access_token", return_value=mock_access_token
-        ):
-            with patch(
-                "openfilter_mcp.auth.read_psctl_token",
-                return_value="psctl-fallback-token",
-            ):
-                token = get_auth_token()
-                assert token == "psctl-fallback-token"
+            assert token == "psctl-token"
 
 
 class TestGetApiClient:

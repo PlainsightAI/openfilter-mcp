@@ -140,7 +140,8 @@ async def list_video_corpus(
             params=params,
         )
         response.raise_for_status()
-        return response.json()
+        videos = response.json()
+        return {"videos": videos, "count": len(videos)}
 
 
 @mcp.tool()
@@ -254,7 +255,8 @@ async def list_tests(
             params=params,
         )
         response.raise_for_status()
-        return response.json()
+        tests = response.json()
+        return {"tests": tests, "count": len(tests)}
 
 
 @mcp.tool()
