@@ -12,6 +12,6 @@ COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
 ENV CMAKE_ARGS="-DGGML_CUDA=off"
-RUN uv sync --locked || uv sync
+RUN uv sync --locked --index llama-cpp-python-cpu || uv sync --index llama-cpp-python-cpu
 
 CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
