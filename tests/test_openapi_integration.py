@@ -345,3 +345,169 @@ class TestSanitizeOpenAPISpec:
         ]["schema"]["properties"]
         assert "$schema" not in props
         assert "data" in props
+
+
+class TestAuthEndpointFiltering:
+    """Tests for auth endpoint filtering from OpenAPI tools."""
+
+    def test_auth_endpoints_are_excluded(self):
+        """Auth endpoints should not be exposed as MCP tools."""
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {
+                "/auth/login": {
+                    "post": {
+                        "operationId": "auth_login",
+                        "summary": "Login",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/auth/token/refresh": {
+                    "post": {
+                        "operationId": "auth_token_refresh",
+                        "summary": "Refresh token",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/projects": {
+                    "get": {
+                        "operationId": "list_projects",
+                        "summary": "List all projects",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+            },
+        }
+
+        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
+            with patch(
+                "openfilter_mcp.server.get_auth_token", return_value="test-token"
+            ):
+                with patch(
+                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                ):
+                    with patch(
+                        "openfilter_mcp.server.get_latest_index_name",
+                        return_value="test-index",
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
+
+                        mcp = create_mcp_server()
+
+        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+
+        # Auth endpoints should NOT be exposed as tools
+        assert "auth_login" not in tool_names
+        assert "auth_token_refresh" not in tool_names
+
+        # Non-auth endpoints should still be exposed
+        assert "list_projects" in tool_names
+
+    def test_accounts_endpoints_are_excluded(self):
+        """Account management endpoints should not be exposed as MCP tools."""
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {
+                "/accounts/create": {
+                    "post": {
+                        "operationId": "account_create",
+                        "summary": "Create account",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/accounts/check-email": {
+                    "get": {
+                        "operationId": "account_check_email",
+                        "summary": "Check if email is available",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/organizations": {
+                    "get": {
+                        "operationId": "list_organizations",
+                        "summary": "List organizations",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+            },
+        }
+
+        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
+            with patch(
+                "openfilter_mcp.server.get_auth_token", return_value="test-token"
+            ):
+                with patch(
+                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                ):
+                    with patch(
+                        "openfilter_mcp.server.get_latest_index_name",
+                        return_value="test-index",
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
+
+                        mcp = create_mcp_server()
+
+        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+
+        # Account endpoints should NOT be exposed as tools
+        assert "account_create" not in tool_names
+        assert "account_check_email" not in tool_names
+
+        # Non-account endpoints should still be exposed
+        assert "list_organizations" in tool_names
+
+    def test_internal_endpoints_are_excluded(self):
+        """Internal endpoints should not be exposed as MCP tools."""
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {
+                "/internal/health": {
+                    "get": {
+                        "operationId": "internal_health",
+                        "summary": "Health check",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/internal/metrics": {
+                    "get": {
+                        "operationId": "internal_metrics",
+                        "summary": "Metrics",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+                "/users": {
+                    "get": {
+                        "operationId": "list_users",
+                        "summary": "List users",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                },
+            },
+        }
+
+        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
+            with patch(
+                "openfilter_mcp.server.get_auth_token", return_value="test-token"
+            ):
+                with patch(
+                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                ):
+                    with patch(
+                        "openfilter_mcp.server.get_latest_index_name",
+                        return_value="test-index",
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
+
+                        mcp = create_mcp_server()
+
+        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+
+        # Internal endpoints should NOT be exposed as tools
+        assert "internal_health" not in tool_names
+        assert "internal_metrics" not in tool_names
+
+        # Non-internal endpoints should still be exposed
+        assert "list_users" in tool_names
