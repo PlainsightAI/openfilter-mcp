@@ -4,6 +4,32 @@ This is a Model Context Protocol ([MCP]) server that allows instruction-optimize
 
 By leveraging semantic retrieval capabilities, any off-the-shelf LLM or VLM can efficiently access relevant information and code snippets from the OpenFilter platform, answering questions or planning to ensure that pipelines and filters are optimized for user requirements.
 
+## Tools
+
+The MCP server exposes two categories of tools:
+
+### Plainsight API Tools (Auto-generated)
+
+All Plainsight API endpoints are automatically exposed as MCP tools via [FastMCP's OpenAPI integration][fastmcp-openapi]. This includes:
+
+- **Projects & Organizations**: List, create, and manage projects
+- **Video Corpus**: Upload, list, and manage videos
+- **Filter Pipelines**: Configure and deploy filter pipelines
+- **Test Management**: Create tests with assertions and golden truth files
+- **Synthetic Video Generation**: Generate synthetic test videos via AI
+- **And more...**: All API endpoints documented in the [OpenAPI spec](https://api.prod.plainsight.tech/openapi.json)
+
+### Code Search Tools (Manual)
+
+These tools provide semantic code search capabilities on indexed repositories:
+
+- `search`: Natural language search for code matching a description
+- `search_code`: Find code similar to a provided snippet
+- `get_chunk`: Retrieve a specific code chunk by ID
+- `read_file`: Read file contents from the indexed monorepo
+
+[fastmcp-openapi]: https://gofastmcp.com/integrations/openapi
+
 This project uses [uv]. first, install dependencies;
 
 ```uv sync```

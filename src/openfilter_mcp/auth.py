@@ -121,7 +121,9 @@ def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
         refresh_token: The refresh token string.
 
     Returns:
-        New token data dict if successful, None otherwise.
+        New token data dict (containing access_token, expiry, refresh_token, etc.)
+        if successful, None otherwise. The returned dict matches the format
+        expected by psctl (flat token structure, not nested in a "token" wrapper).
     """
     try:
         with httpx.Client(base_url=PLAINSIGHT_API_URL, timeout=30.0) as client:
@@ -130,7 +132,12 @@ def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
                 headers={"Authorization": f"Bearer {refresh_token}"},
             )
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                # API returns {"token": {...}} wrapper, extract the inner token
+                # to match psctl's token file format
+                if "token" in data and isinstance(data["token"], dict):
+                    return data["token"]
+                return data
     except Exception:
         pass
     return None
@@ -139,8 +146,12 @@ def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
 def _save_token_data(token_data: Dict[str, Any]) -> bool:
     """Save token data to the psctl token file.
 
+    Saves in the same format as psctl (flat token structure with access_token,
+    refresh_token, expiry, etc.) with secure file permissions (0600).
+
     Args:
-        token_data: The token data dict to save.
+        token_data: The token data dict to save. Should be a flat structure
+            containing access_token, refresh_token, expiry, etc.
 
     Returns:
         True if successful, False otherwise.
@@ -148,8 +159,11 @@ def _save_token_data(token_data: Dict[str, Any]) -> bool:
     try:
         token_path = get_psctl_token_path()
         token_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write with secure permissions (0600) like psctl does
         with open(token_path, "w") as f:
             json.dump(token_data, f)
+        # Set secure file permissions (owner read/write only)
+        os.chmod(token_path, 0o600)
         return True
     except (IOError, OSError):
         return False
