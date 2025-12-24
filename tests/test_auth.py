@@ -12,7 +12,9 @@ import pytest
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
     AuthenticationError,
+    _refresh_token,
     _reset_token_cache,
+    _save_token_data,
     create_token_verifier,
     decode_jwt_payload,
     get_api_client,
@@ -387,3 +389,275 @@ class TestPlainsightApiUrl:
             assert auth_module.PLAINSIGHT_API_URL == custom_url
             # Restore original
             importlib.reload(auth_module)
+
+
+class TestRefreshToken:
+    """Tests for _refresh_token function."""
+
+    def test_extracts_token_from_nested_response(self):
+        """Should extract inner token from API response with 'token' wrapper."""
+        # API returns {"token": {...}} structure
+        api_response = {
+            "token": {
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expiry": "2025-12-24T00:00:00+00:00",
+            }
+        }
+
+        mock_response = httpx.Response(200, json=api_response)
+        with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            result = _refresh_token("old-refresh-token")
+
+        assert result is not None
+        assert result["access_token"] == "new-access-token"
+        assert result["refresh_token"] == "new-refresh-token"
+        # Should return flat structure, not nested
+        assert "token" not in result
+
+    def test_handles_flat_response(self):
+        """Should handle API response without 'token' wrapper (backwards compat)."""
+        api_response = {
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "expiry": "2025-12-24T00:00:00+00:00",
+        }
+
+        mock_response = httpx.Response(200, json=api_response)
+        with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            result = _refresh_token("old-refresh-token")
+
+        assert result is not None
+        assert result["access_token"] == "new-access-token"
+
+    def test_returns_none_on_error_response(self):
+        """Should return None when API returns error status."""
+        mock_response = httpx.Response(401, json={"error": "Invalid refresh token"})
+        with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            result = _refresh_token("invalid-refresh-token")
+
+        assert result is None
+
+    def test_returns_none_on_network_error(self):
+        """Should return None when network error occurs."""
+        with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.side_effect = httpx.ConnectError("Connection failed")
+
+            result = _refresh_token("some-refresh-token")
+
+        assert result is None
+
+    def test_sends_bearer_authorization_header(self):
+        """Should send refresh token as Bearer token in Authorization header."""
+        mock_response = httpx.Response(200, json={"token": {"access_token": "new-token"}})
+        with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+            mock_client_instance = mock_client.return_value.__enter__.return_value
+            mock_client_instance.post.return_value = mock_response
+
+            _refresh_token("my-refresh-token")
+
+            mock_client_instance.post.assert_called_once_with(
+                "/auth/token/refresh",
+                headers={"Authorization": "Bearer my-refresh-token"},
+            )
+
+
+class TestSaveTokenData:
+    """Tests for _save_token_data function."""
+
+    def test_saves_token_to_file(self, tmp_path):
+        """Should save token data to the correct file."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "test-access-token",
+            "refresh_token": "test-refresh-token",
+            "expiry": "2025-12-24T00:00:00+00:00",
+        }
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            result = _save_token_data(token_data)
+
+        assert result is True
+        assert token_file.exists()
+        saved_data = json.loads(token_file.read_text())
+        assert saved_data == token_data
+
+    def test_creates_parent_directories(self, tmp_path):
+        """Should create parent directories if they don't exist."""
+        token_file = tmp_path / "subdir" / "nested" / "token"
+        token_data = {"access_token": "test-token"}
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            result = _save_token_data(token_data)
+
+        assert result is True
+        assert token_file.exists()
+
+    def test_sets_secure_permissions(self, tmp_path):
+        """Should set file permissions to 0600 (owner read/write only)."""
+        token_file = tmp_path / "token"
+        token_data = {"access_token": "test-token"}
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            _save_token_data(token_data)
+
+        # Check file permissions (0600 = owner read/write only)
+        file_mode = token_file.stat().st_mode & 0o777
+        assert file_mode == 0o600
+
+    def test_returns_false_on_permission_error(self, tmp_path):
+        """Should return False when unable to write file."""
+        # Use a path that will fail (e.g., root directory on Unix)
+        token_file = Path("/root/cannot_write_here/token")
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            result = _save_token_data({"access_token": "test"})
+
+        assert result is False
+
+
+class TestTokenRefreshFlow:
+    """Integration tests for the complete token refresh flow."""
+
+    def test_refreshes_expired_token_and_saves(self, tmp_path):
+        """Should refresh expired token and save the new token to disk."""
+        token_file = tmp_path / "token"
+        # Create an expired token with refresh token
+        expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        old_token_data = {
+            "access_token": "old-expired-token",
+            "refresh_token": "valid-refresh-token",
+            "expiry": expired_time.isoformat(),
+        }
+        token_file.write_text(json.dumps(old_token_data))
+
+        # Mock the refresh response
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "new-fresh-token",
+                "refresh_token": "new-refresh-token",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_response = httpx.Response(200, json=api_response)
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+                mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+                token = read_psctl_token()
+
+        # Should return the new token
+        assert token == "new-fresh-token"
+
+        # Should have saved the new token to disk
+        saved_data = json.loads(token_file.read_text())
+        assert saved_data["access_token"] == "new-fresh-token"
+        assert saved_data["refresh_token"] == "new-refresh-token"
+        # Should NOT have the wrapper
+        assert "token" not in saved_data
+
+    def test_refreshes_token_expiring_within_5_minutes(self, tmp_path):
+        """Should refresh token when it will expire within 5 minutes."""
+        token_file = tmp_path / "token"
+        # Create a token expiring in 3 minutes (within 5-minute threshold)
+        almost_expired_time = datetime.now(timezone.utc) + timedelta(minutes=3)
+        old_token_data = {
+            "access_token": "almost-expired-token",
+            "refresh_token": "valid-refresh-token",
+            "expiry": almost_expired_time.isoformat(),
+        }
+        token_file.write_text(json.dumps(old_token_data))
+
+        # Mock the refresh response
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "refreshed-token",
+                "refresh_token": "new-refresh-token",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_response = httpx.Response(200, json=api_response)
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+                mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+                token = read_psctl_token()
+
+        assert token == "refreshed-token"
+
+    def test_returns_none_when_refresh_fails(self, tmp_path):
+        """Should return None when token is expired and refresh fails."""
+        token_file = tmp_path / "token"
+        expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        old_token_data = {
+            "access_token": "expired-token",
+            "refresh_token": "invalid-refresh-token",
+            "expiry": expired_time.isoformat(),
+        }
+        token_file.write_text(json.dumps(old_token_data))
+
+        # Mock refresh failure
+        mock_response = httpx.Response(401, json={"error": "Invalid refresh token"})
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+                mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+                token = read_psctl_token()
+
+        assert token is None
+
+    def test_returns_none_when_no_refresh_token(self, tmp_path):
+        """Should return None when token is expired and no refresh token available."""
+        token_file = tmp_path / "token"
+        expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        old_token_data = {
+            "access_token": "expired-token",
+            # No refresh_token field
+            "expiry": expired_time.isoformat(),
+        }
+        token_file.write_text(json.dumps(old_token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            token = read_psctl_token()
+
+        assert token is None
+
+    def test_handles_nested_token_structure_from_psctl(self, tmp_path):
+        """Should handle token file with nested 'token' wrapper from psctl login."""
+        token_file = tmp_path / "token"
+        expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        # psctl might save with a wrapper structure
+        nested_token_data = {
+            "token": {
+                "access_token": "old-token",
+                "refresh_token": "valid-refresh-token",
+                "expiry": expired_time.isoformat(),
+            }
+        }
+        token_file.write_text(json.dumps(nested_token_data))
+
+        # Mock the refresh response
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "new-token",
+                "refresh_token": "new-refresh-token",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_response = httpx.Response(200, json=api_response)
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.Client") as mock_client:
+                mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+                token = read_psctl_token()
+
+        assert token == "new-token"
