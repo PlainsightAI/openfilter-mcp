@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from openfilter_mcp.auth import (
+    DEFAULT_API_URL,
     PLAINSIGHT_API_URL,
     AuthenticationError,
     _refresh_token,
@@ -18,6 +19,7 @@ from openfilter_mcp.auth import (
     create_token_verifier,
     decode_jwt_payload,
     get_api_client,
+    get_api_url,
     get_async_api_client,
     get_auth_token,
     get_org_id_from_token,
@@ -220,7 +222,7 @@ class TestGetApiClient:
                 assert isinstance(client, httpx.Client)
                 assert client.headers["Authorization"] == "Bearer test-token"
                 # Base URL includes trailing slash
-                assert str(client.base_url).rstrip("/") == PLAINSIGHT_API_URL
+                assert str(client.base_url).rstrip("/") == get_api_url()
             finally:
                 client.close()
 
@@ -253,7 +255,7 @@ class TestGetAsyncApiClient:
                 assert isinstance(client, httpx.AsyncClient)
                 assert client.headers["Authorization"] == "Bearer test-token"
                 # Base URL includes trailing slash
-                assert str(client.base_url).rstrip("/") == PLAINSIGHT_API_URL
+                assert str(client.base_url).rstrip("/") == get_api_url()
             finally:
                 await client.aclose()
 
@@ -367,27 +369,111 @@ class TestApiClientWithOrgHeader:
                 await client.aclose()
 
 
-class TestPlainsightApiUrl:
-    """Tests for PLAINSIGHT_API_URL configuration."""
+class TestApiUrlConfiguration:
+    """Tests for API URL configuration with psctl-compliant env vars."""
 
-    def test_default_url(self):
-        """Should use default URL when env var not set."""
-        assert PLAINSIGHT_API_URL == "https://api.prod.plainsight.tech"
+    def test_default_url_constant(self):
+        """Should have correct default URL constant."""
+        assert DEFAULT_API_URL == "https://api.prod.plainsight.tech"
 
-    def test_env_var_override(self):
-        """Should use environment variable when set."""
-        # This test verifies the behavior but doesn't actually change the module
-        # since PLAINSIGHT_API_URL is set at import time
-        custom_url = "https://custom.api.example.com"
-        with patch.dict(os.environ, {"PLAINSIGHT_API_URL": custom_url}):
-            # Re-import to get new value
+    def test_plainsight_api_url_backwards_compat(self):
+        """Should expose PLAINSIGHT_API_URL for backwards compatibility."""
+        # PLAINSIGHT_API_URL is evaluated at import time
+        assert PLAINSIGHT_API_URL == DEFAULT_API_URL
+
+    def test_get_api_url_returns_default_when_no_env_vars(self):
+        """Should return default URL when no env vars are set."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Clear any existing env vars
+            os.environ.pop("PS_API_URL", None)
+            os.environ.pop("PSCTL_API_URL", None)
+            os.environ.pop("PLAINSIGHT_API_URL", None)
+            assert get_api_url() == DEFAULT_API_URL
+
+    def test_ps_api_url_takes_highest_precedence(self):
+        """PS_API_URL should take highest precedence (matches psctl CLI)."""
+        ps_url = "https://ps.api.example.com"
+        psctl_url = "https://psctl.api.example.com"
+        plainsight_url = "https://plainsight.api.example.com"
+        with patch.dict(
+            os.environ,
+            {
+                "PS_API_URL": ps_url,
+                "PSCTL_API_URL": psctl_url,
+                "PLAINSIGHT_API_URL": plainsight_url,
+            },
+        ):
+            assert get_api_url() == ps_url
+
+    def test_psctl_api_url_takes_precedence_over_plainsight(self):
+        """PSCTL_API_URL should take precedence over PLAINSIGHT_API_URL."""
+        psctl_url = "https://psctl.api.example.com"
+        plainsight_url = "https://plainsight.api.example.com"
+        with patch.dict(
+            os.environ,
+            {"PSCTL_API_URL": psctl_url, "PLAINSIGHT_API_URL": plainsight_url},
+        ):
+            os.environ.pop("PS_API_URL", None)
+            assert get_api_url() == psctl_url
+
+    def test_plainsight_api_url_fallback(self):
+        """Should fall back to PLAINSIGHT_API_URL when others not set."""
+        plainsight_url = "https://plainsight.api.example.com"
+        with patch.dict(os.environ, {"PLAINSIGHT_API_URL": plainsight_url}):
+            # Clear higher-priority env vars
+            os.environ.pop("PS_API_URL", None)
+            os.environ.pop("PSCTL_API_URL", None)
+            assert get_api_url() == plainsight_url
+
+    def test_ps_api_url_only(self):
+        """Should use PS_API_URL when only it is set."""
+        ps_url = "https://ps.api.example.com"
+        with patch.dict(os.environ, {"PS_API_URL": ps_url}):
+            os.environ.pop("PSCTL_API_URL", None)
+            os.environ.pop("PLAINSIGHT_API_URL", None)
+            assert get_api_url() == ps_url
+
+    def test_psctl_api_url_only(self):
+        """Should use PSCTL_API_URL when only it is set."""
+        psctl_url = "https://psctl.api.example.com"
+        with patch.dict(os.environ, {"PSCTL_API_URL": psctl_url}):
+            os.environ.pop("PS_API_URL", None)
+            os.environ.pop("PLAINSIGHT_API_URL", None)
+            assert get_api_url() == psctl_url
+
+    def test_empty_ps_api_url_falls_through(self):
+        """Empty PS_API_URL should fall through to PSCTL_API_URL."""
+        psctl_url = "https://psctl.api.example.com"
+        with patch.dict(
+            os.environ, {"PS_API_URL": "", "PSCTL_API_URL": psctl_url}
+        ):
+            os.environ.pop("PLAINSIGHT_API_URL", None)
+            assert get_api_url() == psctl_url
+
+    def test_empty_psctl_api_url_falls_through(self):
+        """Empty PSCTL_API_URL should fall through to PLAINSIGHT_API_URL."""
+        plainsight_url = "https://plainsight.api.example.com"
+        with patch.dict(
+            os.environ, {"PSCTL_API_URL": "", "PLAINSIGHT_API_URL": plainsight_url}
+        ):
+            os.environ.pop("PS_API_URL", None)
+            assert get_api_url() == plainsight_url
+
+    def test_module_reload_with_ps_api_url(self):
+        """Should use PS_API_URL after module reload."""
+        custom_url = "https://custom.ps.api.example.com"
+        with patch.dict(os.environ, {"PS_API_URL": custom_url}):
+            os.environ.pop("PSCTL_API_URL", None)
+            os.environ.pop("PLAINSIGHT_API_URL", None)
             import importlib
 
             import openfilter_mcp.auth as auth_module
 
             importlib.reload(auth_module)
             assert auth_module.PLAINSIGHT_API_URL == custom_url
+            assert auth_module.get_api_url() == custom_url
             # Restore original
+            os.environ.pop("PS_API_URL", None)
             importlib.reload(auth_module)
 
 

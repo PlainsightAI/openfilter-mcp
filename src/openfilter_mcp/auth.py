@@ -20,7 +20,32 @@ from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 
 
 # Configuration
-PLAINSIGHT_API_URL = os.getenv("PLAINSIGHT_API_URL", "https://api.prod.plainsight.tech")
+# Default API URL for the Plainsight API
+DEFAULT_API_URL = "https://api.prod.plainsight.tech"
+
+
+def get_api_url() -> str:
+    """Get the API URL from environment variables.
+
+    Checks for environment variables in the following order (psctl-compliant):
+    1. PS_API_URL - Primary env var used by psctl CLI
+    2. PSCTL_API_URL - Alternative psctl-style naming
+    3. PLAINSIGHT_API_URL - Legacy/fallback env var for backwards compatibility
+
+    Returns:
+        The API URL to use for plainsight-api requests.
+    """
+    return (
+        os.getenv("PS_API_URL")
+        or os.getenv("PSCTL_API_URL")
+        or os.getenv("PLAINSIGHT_API_URL")
+        or DEFAULT_API_URL
+    )
+
+
+# For backwards compatibility, expose as module-level constant
+# Note: This is evaluated at import time. Use get_api_url() for dynamic lookup.
+PLAINSIGHT_API_URL = get_api_url()
 
 # psctl token file location (follows XDG spec)
 PSCTL_APP_NAME = "plainsight"
@@ -126,7 +151,7 @@ def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
         expected by psctl (flat token structure, not nested in a "token" wrapper).
     """
     try:
-        with httpx.Client(base_url=PLAINSIGHT_API_URL, timeout=30.0) as client:
+        with httpx.Client(base_url=get_api_url(), timeout=30.0) as client:
             response = client.post(
                 "/auth/token/refresh",
                 headers={"Authorization": f"Bearer {refresh_token}"},
@@ -314,7 +339,7 @@ def get_api_client(timeout: float = 30.0) -> httpx.Client:
         headers["X-Scope-OrgID"] = org_id
 
     return httpx.Client(
-        base_url=PLAINSIGHT_API_URL,
+        base_url=get_api_url(),
         headers=headers,
         timeout=timeout,
     )
@@ -372,7 +397,7 @@ def get_async_api_client(timeout: float = 30.0) -> httpx.AsyncClient:
         headers["X-Scope-OrgID"] = org_id
 
     return httpx.AsyncClient(
-        base_url=PLAINSIGHT_API_URL,
+        base_url=get_api_url(),
         headers=headers,
         timeout=timeout,
     )
