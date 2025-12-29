@@ -253,13 +253,26 @@ def create_mcp_server() -> FastMCP:
 
     Returns:
         A FastMCP server instance with all Plainsight API tools plus code search tools.
+        If no authentication token is available, only code search tools are registered.
     """
-    openapi_spec = get_openapi_spec()
-    client = create_authenticated_client()
-
     # Get org_id from token to use as default for X-Scope-OrgID parameter
     token = get_auth_token()
     org_id = get_org_id_from_token(token) if token else None
+
+    # Try to create authenticated client and load OpenAPI tools
+    # If no token is available, we'll still create a server with code search tools
+    client = None
+    openapi_spec = None
+    has_auth = False
+
+    if token:
+        try:
+            client = create_authenticated_client()
+            openapi_spec = get_openapi_spec()
+            has_auth = True
+        except AuthenticationError:
+            # Token was available but invalid - proceed without API tools
+            pass
 
     def hide_org_id_param(route, component):
         """Hide the X-Scope-OrgID parameter from tools since it's auto-injected from the token."""
@@ -277,41 +290,45 @@ def create_mcp_server() -> FastMCP:
                 component.parameters = transformed.parameters
                 component.fn = transformed.fn
 
-    # Define route mappings - all endpoints become tools except internal and auth
-    route_maps = [
-        # Exclude internal endpoints
-        RouteMap(
-            pattern=r"^/internal/.*",
-            mcp_type=MCPType.EXCLUDE,
-        ),
-        # Exclude auth endpoints - authentication is handled transparently by the MCP wrapper
-        # This prevents agents from attempting to use auth endpoints directly
-        RouteMap(
-            pattern=r"^/auth/.*",
-            mcp_type=MCPType.EXCLUDE,
-        ),
-        # Exclude account management endpoints (signup, email checks, etc.)
-        # These are also auth-related and should not be exposed to agents
-        RouteMap(
-            pattern=r"^/accounts/.*",
-            mcp_type=MCPType.EXCLUDE,
-        ),
-        # All other endpoints become tools
-        RouteMap(
-            methods=["*"],
-            pattern=r".*",
-            mcp_type=MCPType.TOOL,
-        ),
-    ]
+    if has_auth and openapi_spec and client:
+        # Define route mappings - all endpoints become tools except internal and auth
+        route_maps = [
+            # Exclude internal endpoints
+            RouteMap(
+                pattern=r"^/internal/.*",
+                mcp_type=MCPType.EXCLUDE,
+            ),
+            # Exclude auth endpoints - authentication is handled transparently by the MCP wrapper
+            # This prevents agents from attempting to use auth endpoints directly
+            RouteMap(
+                pattern=r"^/auth/.*",
+                mcp_type=MCPType.EXCLUDE,
+            ),
+            # Exclude account management endpoints (signup, email checks, etc.)
+            # These are also auth-related and should not be exposed to agents
+            RouteMap(
+                pattern=r"^/accounts/.*",
+                mcp_type=MCPType.EXCLUDE,
+            ),
+            # All other endpoints become tools
+            RouteMap(
+                methods=["*"],
+                pattern=r".*",
+                mcp_type=MCPType.TOOL,
+            ),
+        ]
 
-    mcp = FastMCP.from_openapi(
-        openapi_spec=openapi_spec,
-        client=client,
-        name="OpenFilter MCP",
-        route_maps=route_maps,
-        timeout=30.0,
-        mcp_component_fn=hide_org_id_param,
-    )
+        mcp = FastMCP.from_openapi(
+            openapi_spec=openapi_spec,
+            client=client,
+            name="OpenFilter MCP",
+            route_maps=route_maps,
+            timeout=30.0,
+            mcp_component_fn=hide_org_id_param,
+        )
+    else:
+        # No authentication available - create a basic MCP server with only code search tools
+        mcp = FastMCP(name="OpenFilter MCP")
 
     # Get the latest index name for code search tools
     latest_index_name = get_latest_index_name()
@@ -353,66 +370,67 @@ def create_mcp_server() -> FastMCP:
         return content
 
     # =========================================================================
-    # Generic Polling Tool
+    # Generic Polling Tool (only available with authentication)
     # =========================================================================
 
-    @mcp.tool()
-    async def poll_until_change(
-        endpoint: str,
-        field: str,
-        target_values: str,
-        poll_interval_seconds: int = 5,
-        timeout_seconds: int = 600,
-    ) -> Dict[str, Any]:
-        """Poll an API endpoint until a field reaches one of the target values.
+    if has_auth and client:
+        @mcp.tool()
+        async def poll_until_change(
+            endpoint: str,
+            field: str,
+            target_values: str,
+            poll_interval_seconds: int = 5,
+            timeout_seconds: int = 600,
+        ) -> Dict[str, Any]:
+            """Poll an API endpoint until a field reaches one of the target values.
 
-        This is a generic polling tool that can wait for any async operation to complete.
+            This is a generic polling tool that can wait for any async operation to complete.
 
-        Args:
-            endpoint: The API endpoint to poll (e.g., "/trainings/abc-123").
-            field: The field name to check in the response (e.g., "status").
-            target_values: Comma-separated list of values that indicate completion (e.g., "completed,failed,cancelled").
-            poll_interval_seconds: How often to check (default: 5 seconds).
-            timeout_seconds: Maximum time to wait (default: 600 seconds = 10 minutes).
+            Args:
+                endpoint: The API endpoint to poll (e.g., "/trainings/abc-123").
+                field: The field name to check in the response (e.g., "status").
+                target_values: Comma-separated list of values that indicate completion (e.g., "completed,failed,cancelled").
+                poll_interval_seconds: How often to check (default: 5 seconds).
+                timeout_seconds: Maximum time to wait (default: 600 seconds = 10 minutes).
 
-        Returns:
-            Object with status ("completed" or "timeout"), the final result, and elapsed time.
+            Returns:
+                Object with status ("completed" or "timeout"), the final result, and elapsed time.
 
-        Examples:
-            - Wait for training: endpoint="/trainings/{id}", field="status", target_values="completed,failed,cancelled"
-            - Wait for synthetic video: endpoint="/projects/{project_id}/synthetic-videos/{job_id}", field="status", target_values="completed,failed"
-            - Wait for recording: endpoint="/projects/{project_id}/recordings/{id}", field="status", target_values="completed,failed,cancelled"
-            - Wait for pipeline: endpoint="/pipeline-instances/{id}", field="status", target_values="running,failed,error"
-        """
-        targets = [v.strip() for v in target_values.split(",")]
-        elapsed = 0
-        last_value = None
+            Examples:
+                - Wait for training: endpoint="/trainings/{id}", field="status", target_values="completed,failed,cancelled"
+                - Wait for synthetic video: endpoint="/projects/{project_id}/synthetic-videos/{job_id}", field="status", target_values="completed,failed"
+                - Wait for recording: endpoint="/projects/{project_id}/recordings/{id}", field="status", target_values="completed,failed,cancelled"
+                - Wait for pipeline: endpoint="/pipeline-instances/{id}", field="status", target_values="running,failed,error"
+            """
+            targets = [v.strip() for v in target_values.split(",")]
+            elapsed = 0
+            last_value = None
 
-        while elapsed < timeout_seconds:
-            response = await client.get(endpoint)
-            response.raise_for_status()
-            data = response.json()
+            while elapsed < timeout_seconds:
+                response = await client.get(endpoint)
+                response.raise_for_status()
+                data = response.json()
 
-            last_value = data.get(field)
-            if last_value in targets:
-                return {
-                    "status": "completed",
-                    "field": field,
-                    "final_value": last_value,
-                    "result": data,
-                    "elapsed_seconds": elapsed,
-                }
+                last_value = data.get(field)
+                if last_value in targets:
+                    return {
+                        "status": "completed",
+                        "field": field,
+                        "final_value": last_value,
+                        "result": data,
+                        "elapsed_seconds": elapsed,
+                    }
 
-            await asyncio.sleep(poll_interval_seconds)
-            elapsed += poll_interval_seconds
+                await asyncio.sleep(poll_interval_seconds)
+                elapsed += poll_interval_seconds
 
-        return {
-            "status": "timeout",
-            "message": f"Field '{field}' did not reach target values {targets} within {timeout_seconds} seconds",
-            "field": field,
-            "last_value": last_value,
-            "elapsed_seconds": elapsed,
-        }
+            return {
+                "status": "timeout",
+                "message": f"Field '{field}' did not reach target values {targets} within {timeout_seconds} seconds",
+                "field": field,
+                "last_value": last_value,
+                "elapsed_seconds": elapsed,
+            }
 
     return mcp
 

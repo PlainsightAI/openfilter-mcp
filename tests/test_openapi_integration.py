@@ -96,6 +96,33 @@ class TestAuthenticatedClient:
 class TestMCPServerCreation:
     """Tests for MCP server creation from OpenAPI spec."""
 
+    def test_create_mcp_server_without_token_still_works(self):
+        """Should create MCP server with only code search tools when no token available."""
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            with patch(
+                "openfilter_mcp.server.get_latest_index_name",
+                return_value="test-index",
+            ):
+                from openfilter_mcp.server import create_mcp_server
+
+                # This should NOT raise an exception
+                mcp = create_mcp_server()
+
+        # Verify code search tools were registered
+        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+
+        # Manually defined code search tools should still be available
+        assert "search" in tool_names
+        assert "search_code" in tool_names
+        assert "get_chunk" in tool_names
+        assert "read_file" in tool_names
+
+        # OpenAPI tools should NOT be available (no auth)
+        assert "list_projects" not in tool_names
+
+        # Polling tool should NOT be available (requires auth)
+        assert "poll_until_change" not in tool_names
+
     def test_create_mcp_server_registers_openapi_tools(self):
         """Should create MCP server with tools from OpenAPI spec."""
         mock_spec = {
