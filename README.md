@@ -77,6 +77,26 @@ required url, e.g.:
 }
 ```
 
+## Configuration
+
+### Environment Variables
+
+The following environment variables can be used to configure the MCP server:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PS_API_URL` | API URL for Plainsight API (same as psctl CLI) | `https://api.prod.plainsight.tech` |
+| `PSCTL_API_URL` | Alternative psctl-style API URL | `https://api.prod.plainsight.tech` |
+| `PLAINSIGHT_API_URL` | Legacy API URL (fallback for backwards compatibility) | `https://api.prod.plainsight.tech` |
+
+**Precedence order:** `PS_API_URL` > `PSCTL_API_URL` > `PLAINSIGHT_API_URL` > default
+
+This follows the same convention as the `psctl` CLI for consistency.
+
+### Authentication
+
+The MCP server uses the same authentication as `psctl`. After running `psctl login`, the MCP server will automatically use your stored credentials from `~/.config/plainsight/token` (or `$XDG_CONFIG_HOME/plainsight/token` if set).
+
 <details>
 <summary>or, for clients without explicit HTTP support:</summary>
 
