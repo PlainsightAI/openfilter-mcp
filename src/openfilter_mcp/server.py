@@ -277,11 +277,23 @@ def create_mcp_server() -> FastMCP:
                 component.parameters = transformed.parameters
                 component.fn = transformed.fn
 
-    # Define route mappings - all endpoints become tools
+    # Define route mappings - all endpoints become tools except internal and auth
     route_maps = [
-        # Exclude any internal endpoints
+        # Exclude internal endpoints
         RouteMap(
             pattern=r"^/internal/.*",
+            mcp_type=MCPType.EXCLUDE,
+        ),
+        # Exclude auth endpoints - authentication is handled transparently by the MCP wrapper
+        # This prevents agents from attempting to use auth endpoints directly
+        RouteMap(
+            pattern=r"^/auth/.*",
+            mcp_type=MCPType.EXCLUDE,
+        ),
+        # Exclude account management endpoints (signup, email checks, etc.)
+        # These are also auth-related and should not be exposed to agents
+        RouteMap(
+            pattern=r"^/accounts/.*",
             mcp_type=MCPType.EXCLUDE,
         ),
         # All other endpoints become tools
