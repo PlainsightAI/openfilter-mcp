@@ -88,19 +88,20 @@ class TestCreateTokenVerifier:
 class TestGetPsctlTokenPath:
     """Tests for get_psctl_token_path function."""
 
-    def test_default_path(self):
-        """Should return default XDG path when XDG_CONFIG_HOME not set."""
-        with patch.dict(os.environ, {}, clear=True):
-            # Clear XDG_CONFIG_HOME if set
-            os.environ.pop("XDG_CONFIG_HOME", None)
-            path = get_psctl_token_path()
-            assert path == Path.home() / ".config" / "plainsight" / "token"
+    def test_returns_path_in_config_dir(self):
+        """Should return path using platformdirs user_config_dir."""
+        path = get_psctl_token_path()
+        # The path should end with plainsight/token
+        assert path.name == "token"
+        assert path.parent.name == "plainsight"
 
-    def test_xdg_config_home_override(self):
-        """Should use XDG_CONFIG_HOME when set."""
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/custom/config"}):
-            path = get_psctl_token_path()
-            assert path == Path("/custom/config/plainsight/token")
+    def test_path_uses_platformdirs(self):
+        """Should use platformdirs.user_config_dir for the base directory."""
+        import platformdirs
+
+        expected_config_dir = platformdirs.user_config_dir("plainsight")
+        path = get_psctl_token_path()
+        assert str(path) == str(Path(expected_config_dir) / "token")
 
 
 class TestReadPsctlToken:
