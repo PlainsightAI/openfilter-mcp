@@ -57,6 +57,34 @@ docker logs openfilter-mcp
 docker stop openfilter-mcp
 ```
 
+### Authentication with Docker
+
+To use Plainsight API tools (project management, video corpus, filter pipelines, etc.), you need to mount your local token file into the container.
+
+First, authenticate using the psctl CLI on your host machine:
+
+```bash
+# Login first (required before running in scripts/CI)
+psctl auth login
+
+# Verify the token path
+psctl token path
+# Output: /home/user/.config/plainsight/token (or similar)
+```
+
+> **Important**: You must run `psctl auth login` before using `psctl token path` in scripts or non-interactive environments. If no token exists, `psctl token path` will prompt for login interactively, which will hang in automated/non-interactive contexts.
+
+Then mount the token file when running the container:
+
+```bash
+# Get the token path and mount it to the container
+docker run --name openfilter-mcp -d -p 3000:3000 \
+  -v "$(psctl token path):/root/.config/plainsight/token:ro" \
+  plainsightai/openfilter-mcp
+```
+
+The token file must be mounted to `~/.config/plainsight/token` inside the container (which is `/root/.config/plainsight/token` for the root user). The `:ro` flag mounts it read-only for security.
+
 The server will be available at:
 
 ```
