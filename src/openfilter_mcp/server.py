@@ -24,7 +24,6 @@ from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
 from fastmcp.server.openapi import RouteMap, MCPType
 from fastmcp.tools import Tool
-from fastmcp.tools.tool_transform import ArgTransform
 
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
@@ -275,20 +274,23 @@ def create_mcp_server() -> FastMCP:
             pass
 
     def hide_org_id_param(route, component):
-        """Hide the X-Scope-OrgID parameter from tools since it's auto-injected from the token."""
+        """Hide the X-Scope-OrgID parameter from tools since it's auto-injected from the token.
+
+        The X-Scope-OrgID header is already set on the httpx client, so we just need to
+        remove it from the visible parameters schema to avoid user confusion.
+        """
         if isinstance(component, Tool) and org_id:
             # Check if this tool has X-Scope-OrgID parameter
             if component.parameters and "X-Scope-OrgID" in component.parameters.get("properties", {}):
-                # Transform the tool to hide the X-Scope-OrgID parameter
-                transformed = Tool.from_tool(
-                    component,
-                    transform_args={
-                        "X-Scope-OrgID": ArgTransform(hide=True, default=org_id)
-                    },
-                )
-                # Copy transformed attributes back to component
-                component.parameters = transformed.parameters
-                component.fn = transformed.fn
+                # Remove X-Scope-OrgID from the parameters schema
+                # The header is already injected via the httpx client headers
+                del component.parameters["properties"]["X-Scope-OrgID"]
+                # Also remove from required list if present
+                if "required" in component.parameters:
+                    component.parameters["required"] = [
+                        r for r in component.parameters["required"]
+                        if r != "X-Scope-OrgID"
+                    ]
 
     if has_auth and openapi_spec and client:
         # Define route mappings - all endpoints become tools except internal and auth
