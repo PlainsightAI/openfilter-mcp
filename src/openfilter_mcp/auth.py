@@ -4,7 +4,10 @@ This module provides Bearer token authentication and passthrough to plainsight-a
 Supports both Supabase JWT tokens and API tokens (ps_ prefix).
 
 When no Bearer token is provided in the request, falls back to reading the token
-from the psctl CLI configuration at ~/.config/plainsight/token (or XDG equivalent).
+from the psctl CLI configuration at the platform-appropriate location:
+  - Linux: ~/.config/plainsight/token
+  - macOS: ~/Library/Application Support/plainsight/token
+  - Windows: C:\\Users\\<user>\\AppData\\Local\\plainsight\\token
 """
 
 import base64
@@ -16,13 +19,14 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Generator, Optional
 
 import httpx
+import platformdirs
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 
 
 # Configuration
 PLAINSIGHT_API_URL = os.getenv("PLAINSIGHT_API_URL", "https://api.prod.plainsight.tech")
 
-# psctl token file location (follows XDG spec)
+# psctl token file location (uses platformdirs for cross-platform compatibility)
 PSCTL_APP_NAME = "plainsight"
 PSCTL_TOKEN_FILENAME = "token"
 
@@ -100,18 +104,18 @@ def get_org_id_from_token(token: str) -> Optional[str]:
 
 
 def get_psctl_token_path() -> Path:
-    """Get the path to the psctl token file following XDG spec.
+    """Get the path to the psctl token file using platformdirs.
+
+    Uses platformdirs.user_config_dir() for cross-platform compatibility:
+      - Linux: ~/.config/plainsight/token
+      - macOS: ~/Library/Application Support/plainsight/token
+      - Windows: C:\\Users\\<user>\\AppData\\Local\\plainsight\\token
 
     Returns:
-        Path to the token file (~/.config/plainsight/token or XDG equivalent).
+        Path to the token file in the platform-appropriate config directory.
     """
-    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
-    if xdg_config_home:
-        config_dir = Path(xdg_config_home)
-    else:
-        config_dir = Path.home() / ".config"
-
-    return config_dir / PSCTL_APP_NAME / PSCTL_TOKEN_FILENAME
+    config_dir = platformdirs.user_config_dir(PSCTL_APP_NAME)
+    return Path(config_dir) / PSCTL_TOKEN_FILENAME
 
 
 def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
