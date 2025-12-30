@@ -79,11 +79,11 @@ Then mount the token file when running the container:
 ```bash
 # Get the token path and mount it to the container
 docker run --name openfilter-mcp -d -p 3000:3000 \
-  -v "$(psctl token path):/root/.config/plainsight/token:ro" \
+  -v "$(psctl token path):/root/.config/plainsight/token" \
   plainsightai/openfilter-mcp
 ```
 
-The token file must be mounted to `~/.config/plainsight/token` inside the container (which is `/root/.config/plainsight/token` for the root user). The `:ro` flag mounts it read-only for security.
+The token file must be mounted to `~/.config/plainsight/token` inside the container (which is `/root/.config/plainsight/token` for the root user). The mount is read-write to allow the MCP server to automatically refresh the token when it expires.
 
 The server will be available at:
 
