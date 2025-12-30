@@ -43,6 +43,11 @@ steps:
     args: ['-c', 'echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin']
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
 
+  # Set up QEMU for multiplatform builds
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['run', '--privileged', 'multiarch/qemu-user-static', '--reset', '-p', 'yes']
+
+  # Create Dockerfile and build multiplatform image
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -63,10 +68,24 @@ steps:
         CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
         EOF
 
-        docker buildx create --use --name multiarch
-        _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest"
-        [[ "${TAG_NAME}" =~ ^v ]] && TAGS="$_TAGS -t ${_DOCKERHUB_REPO}:$${TAG_NAME#v}"
-        docker buildx build --platform linux/amd64,linux/arm64 $_TAGS --push -f Dockerfile.gpu .
+        # Create buildx builder with docker-container driver for multiplatform support
+        docker buildx create --name multiarch-builder --driver docker-container --use
+        docker buildx inspect --bootstrap
+
+        # Build tags using Cloud Build substitutions
+        # SHORT_SHA and TAG_NAME are substituted by Cloud Build before script execution
+        _TAGS="-t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${SHORT_SHA}"
+        if [[ "${TAG_NAME}" =~ ^v ]]; then
+          _TAGS="$$_TAGS -t ${_DOCKERHUB_REPO}:${TAG_NAME#v}"
+        fi
+        echo "Building with tags: $$_TAGS"
+
+        # Build and push multiplatform image
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $$_TAGS \
+          --push \
+          -f Dockerfile.gpu .
 
   # Cleanup
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
