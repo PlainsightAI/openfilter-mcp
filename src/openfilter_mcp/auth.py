@@ -12,6 +12,7 @@ from the psctl CLI configuration at the platform-appropriate location:
 
 import base64
 import json
+import logging
 import os
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,8 @@ from typing import Any, AsyncGenerator, Dict, Generator, Optional
 import httpx
 import platformdirs
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
+
+logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -169,6 +172,103 @@ def _refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
                 return data
     except Exception:
         pass
+    return None
+
+
+async def _async_refresh_token(refresh_token: str) -> Optional[Dict[str, Any]]:
+    """Asynchronously refresh an expired access token using the refresh token.
+
+    Args:
+        refresh_token: The refresh token string.
+
+    Returns:
+        New token data dict (containing access_token, expiry, refresh_token, etc.)
+        if successful, None otherwise.
+    """
+    try:
+        async with httpx.AsyncClient(base_url=get_api_url(), timeout=30.0) as client:
+            response = await client.post(
+                "/auth/token/refresh",
+                headers={"Authorization": f"Bearer {refresh_token}"},
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # API returns {"token": {...}} wrapper, extract the inner token
+                if "token" in data and isinstance(data["token"], dict):
+                    return data["token"]
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _get_refresh_token_from_file() -> Optional[str]:
+    """Read the refresh token from the psctl token file.
+
+    Returns:
+        The refresh token string if available, None otherwise.
+    """
+    token_path = get_psctl_token_path()
+    if not token_path.exists():
+        return None
+
+    try:
+        with open(token_path, "r") as f:
+            token_data = json.load(f)
+
+        # Handle nested token structure
+        if "token" in token_data and isinstance(token_data["token"], dict):
+            token_data = token_data["token"]
+
+        return token_data.get("refresh_token")
+    except (json.JSONDecodeError, IOError, OSError):
+        return None
+
+
+async def refresh_and_get_new_token() -> Optional[str]:
+    """Attempt to refresh the token and return the new access token.
+
+    This is used for transparent token refresh on 401 errors.
+    Invalidates the token cache and attempts refresh using the stored refresh token.
+
+    Returns:
+        The new access token string if refresh was successful, None otherwise.
+    """
+    global _cached_token, _cached_token_expiry
+
+    # Clear the cache to force re-read
+    _cached_token = None
+    _cached_token_expiry = None
+
+    # Get refresh token from file
+    refresh_token = _get_refresh_token_from_file()
+    if not refresh_token:
+        logger.debug("No refresh token available for token refresh")
+        return None
+
+    # Attempt async refresh
+    new_token_data = await _async_refresh_token(refresh_token)
+    if not new_token_data:
+        logger.warning("Token refresh failed")
+        return None
+
+    # Save the new token data
+    if _save_token_data(new_token_data):
+        new_access_token = new_token_data.get("access_token")
+        if new_access_token:
+            # Update cache with new token
+            _cached_token = new_access_token
+            expiry_str = new_token_data.get("expiry")
+            if expiry_str:
+                try:
+                    _cached_token_expiry = datetime.fromisoformat(
+                        expiry_str.replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pass
+            logger.debug("Token refreshed successfully")
+            return new_access_token
+
     return None
 
 
@@ -421,13 +521,178 @@ async def async_api_client(
         timeout: Request timeout in seconds.
 
     Yields:
-        Configured httpx.AsyncClient instance.
+        Configured httpx.AsyncClient instance with automatic 401 retry.
 
     Raises:
         AuthenticationError: If no valid token is available.
     """
-    client = get_async_api_client(timeout)
+    client = get_async_api_client_with_retry(timeout)
     try:
         yield client
     finally:
         await client.aclose()
+
+
+class TokenRefreshTransport(httpx.AsyncBaseTransport):
+    """Custom transport that handles 401 errors by refreshing the token and retrying.
+
+    This transport intercepts 401 Unauthorized responses, attempts to refresh
+    the authentication token, and retries the original request with the new token.
+    This makes token expiration transparent to the caller.
+    """
+
+    def __init__(
+        self,
+        transport: httpx.AsyncBaseTransport,
+        get_org_id: callable,
+    ):
+        """Initialize the token refresh transport.
+
+        Args:
+            transport: The underlying transport to use for requests.
+            get_org_id: Callable to get org ID from a token.
+        """
+        self._transport = transport
+        self._get_org_id = get_org_id
+        self._refresh_lock = None  # Will be initialized lazily
+
+    def _is_token_expired_error(self, response: httpx.Response) -> bool:
+        """Check if a 401 response indicates token expiration (vs other auth errors).
+
+        We only want to refresh the token when it's genuinely expired, not when:
+        - The user doesn't have permission (should be 403, but check anyway)
+        - The token is invalid/malformed
+        - The token was revoked
+
+        Token expiration errors from plainsight-api contain specific messages:
+        - "token is expired" (from JWT validation)
+        - "use expired token" (from auth service)
+
+        Args:
+            response: The 401 response to check.
+
+        Returns:
+            True if the error indicates token expiration, False otherwise.
+        """
+        try:
+            # Read response body to check error message
+            body = response.json()
+
+            # Check the errors array for expiration-related messages
+            errors = body.get("errors", [])
+            if isinstance(errors, list):
+                for error in errors:
+                    message = error.get("message", "") if isinstance(error, dict) else str(error)
+                    if "expired" in message.lower():
+                        return True
+
+            # Also check the detail field
+            detail = body.get("detail", "")
+            if "expired" in detail.lower():
+                return True
+
+        except Exception:
+            # If we can't parse the response, don't attempt refresh
+            # (could be network error, malformed response, etc.)
+            pass
+
+        return False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        """Handle a request, refreshing token on 401 (expiration only) and retrying.
+
+        Args:
+            request: The HTTP request to send.
+
+        Returns:
+            The HTTP response.
+        """
+        response = await self._transport.handle_async_request(request)
+
+        # If we get a 401, check if it's due to token expiration
+        if response.status_code == 401:
+            # Read the response body to check for expiration
+            # We need to read it here because response body can only be read once
+            await response.aread()
+
+            if not self._is_token_expired_error(response):
+                # Not a token expiration error - return as-is
+                # This could be invalid token, revoked token, permission issue, etc.
+                logger.debug("Received 401 but not due to token expiration, not refreshing")
+                return response
+
+            # Initialize lock lazily to avoid issues with event loop
+            if self._refresh_lock is None:
+                import asyncio
+                self._refresh_lock = asyncio.Lock()
+
+            async with self._refresh_lock:
+                logger.debug("Received 401 due to token expiration, attempting refresh")
+                new_token = await refresh_and_get_new_token()
+
+                if new_token:
+                    # Build new headers with refreshed token
+                    new_headers = httpx.Headers(request.headers)
+                    new_headers["Authorization"] = f"Bearer {new_token}"
+
+                    # Update org ID header if needed
+                    org_id = self._get_org_id(new_token)
+                    if org_id:
+                        new_headers["X-Scope-OrgID"] = org_id
+
+                    # Create a new request with updated headers
+                    new_request = httpx.Request(
+                        method=request.method,
+                        url=request.url,
+                        headers=new_headers,
+                        content=request.content,
+                    )
+
+                    # Retry the request
+                    logger.debug("Retrying request with refreshed token")
+                    response = await self._transport.handle_async_request(new_request)
+
+        return response
+
+
+def get_async_api_client_with_retry(timeout: float = 30.0) -> httpx.AsyncClient:
+    """Create an async HTTP client with automatic 401 retry via token refresh.
+
+    This client will transparently handle token expiration by:
+    1. Detecting 401 Unauthorized responses
+    2. Attempting to refresh the token using the stored refresh token
+    3. Retrying the original request with the new token
+
+    Args:
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Configured httpx.AsyncClient instance with token refresh transport.
+
+    Raises:
+        AuthenticationError: If no valid token is available.
+    """
+    token = get_auth_token()
+    if not token:
+        raise AuthenticationError("No authentication token available")
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Add organization ID header if available in the token
+    org_id = get_org_id_from_token(token)
+    if org_id:
+        headers["X-Scope-OrgID"] = org_id
+
+    # Create base transport wrapped with token refresh handling
+    base_transport = httpx.AsyncHTTPTransport()
+    refresh_transport = TokenRefreshTransport(
+        transport=base_transport,
+        get_org_id=get_org_id_from_token,
+    )
+
+    return httpx.AsyncClient(
+        base_url=get_api_url(),
+        headers=headers,
+        timeout=timeout,
+        transport=refresh_transport,
+    )

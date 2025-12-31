@@ -13,6 +13,9 @@ from openfilter_mcp.auth import (
     DEFAULT_API_URL,
     PLAINSIGHT_API_URL,
     AuthenticationError,
+    TokenRefreshTransport,
+    _async_refresh_token,
+    _get_refresh_token_from_file,
     _refresh_token,
     _reset_token_cache,
     _save_token_data,
@@ -21,10 +24,12 @@ from openfilter_mcp.auth import (
     get_api_client,
     get_api_url,
     get_async_api_client,
+    get_async_api_client_with_retry,
     get_auth_token,
     get_org_id_from_token,
     get_psctl_token_path,
     read_psctl_token,
+    refresh_and_get_new_token,
 )
 
 
@@ -748,3 +753,566 @@ class TestTokenRefreshFlow:
                 token = read_psctl_token()
 
         assert token == "new-token"
+
+
+class TestAsyncRefreshToken:
+    """Tests for _async_refresh_token function."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_token_from_nested_response(self):
+        """Should extract inner token from API response with 'token' wrapper."""
+        api_response = {
+            "token": {
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expiry": "2025-12-24T00:00:00+00:00",
+            }
+        }
+
+        mock_response = httpx.Response(200, json=api_response)
+        with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = (
+                lambda *args, **kwargs: mock_response
+            )
+            # Make it async by wrapping
+            async def async_post(*args, **kwargs):
+                return mock_response
+            mock_client.return_value.__aenter__.return_value.post = async_post
+
+            result = await _async_refresh_token("old-refresh-token")
+
+        assert result is not None
+        assert result["access_token"] == "new-access-token"
+        assert "token" not in result
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_error_response(self):
+        """Should return None when API returns error status."""
+        mock_response = httpx.Response(401, json={"error": "Invalid"})
+        with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+            async def async_post(*args, **kwargs):
+                return mock_response
+            mock_client.return_value.__aenter__.return_value.post = async_post
+
+            result = await _async_refresh_token("invalid-token")
+
+        assert result is None
+
+
+class TestGetRefreshTokenFromFile:
+    """Tests for _get_refresh_token_from_file function."""
+
+    def test_returns_refresh_token_from_file(self, tmp_path):
+        """Should return refresh_token from valid token file."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "access",
+            "refresh_token": "my-refresh-token",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            refresh_token = _get_refresh_token_from_file()
+
+        assert refresh_token == "my-refresh-token"
+
+    def test_returns_none_when_file_not_exists(self, tmp_path):
+        """Should return None when token file doesn't exist."""
+        with patch(
+            "openfilter_mcp.auth.get_psctl_token_path",
+            return_value=tmp_path / "nonexistent",
+        ):
+            refresh_token = _get_refresh_token_from_file()
+
+        assert refresh_token is None
+
+    def test_handles_nested_structure(self, tmp_path):
+        """Should handle nested token structure from psctl."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "token": {
+                "access_token": "access",
+                "refresh_token": "nested-refresh-token",
+            }
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            refresh_token = _get_refresh_token_from_file()
+
+        assert refresh_token == "nested-refresh-token"
+
+    def test_returns_none_when_no_refresh_token(self, tmp_path):
+        """Should return None when refresh_token field is missing."""
+        token_file = tmp_path / "token"
+        token_data = {"access_token": "access-only"}
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            refresh_token = _get_refresh_token_from_file()
+
+        assert refresh_token is None
+
+
+class TestRefreshAndGetNewToken:
+    """Tests for refresh_and_get_new_token function."""
+
+    @pytest.mark.asyncio
+    async def test_refreshes_and_returns_new_token(self, tmp_path):
+        """Should refresh token and return new access token."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old-token",
+            "refresh_token": "valid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "brand-new-token",
+                "refresh_token": "new-refresh",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_response = httpx.Response(200, json=api_response)
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                new_token = await refresh_and_get_new_token()
+
+        assert new_token == "brand-new-token"
+        # Token should be saved
+        saved_data = json.loads(token_file.read_text())
+        assert saved_data["access_token"] == "brand-new-token"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_refresh_token(self, tmp_path):
+        """Should return None when no refresh token available."""
+        token_file = tmp_path / "token"
+        token_data = {"access_token": "access-only"}
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            new_token = await refresh_and_get_new_token()
+
+        assert new_token is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_refresh_fails(self, tmp_path):
+        """Should return None when token refresh fails."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "invalid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        mock_response = httpx.Response(401, json={"error": "Invalid"})
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                new_token = await refresh_and_get_new_token()
+
+        assert new_token is None
+
+    @pytest.mark.asyncio
+    async def test_clears_cache_before_refresh(self, tmp_path):
+        """Should clear token cache before attempting refresh."""
+        import openfilter_mcp.auth as auth_module
+
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "valid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        # Set up cached token
+        auth_module._cached_token = "cached-old-token"
+        auth_module._cached_token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "new-token",
+                "refresh_token": "new-refresh",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_response = httpx.Response(200, json=api_response)
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                new_token = await refresh_and_get_new_token()
+
+        assert new_token == "new-token"
+        # Cache should be updated with new token
+        assert auth_module._cached_token == "new-token"
+
+
+class TestTokenRefreshTransport:
+    """Tests for TokenRefreshTransport class."""
+
+    @pytest.mark.asyncio
+    async def test_passes_through_successful_requests(self):
+        """Should pass through requests that succeed without 401."""
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                return httpx.Response(200, json={"success": True})
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request("GET", "https://api.example.com/test")
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_retries_on_401_after_refresh(self, tmp_path):
+        """Should retry request with new token after 401 due to expiration."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "valid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        call_count = 0
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First call returns 401 with expiration error
+                    return httpx.Response(
+                        401,
+                        json={
+                            "detail": "Invalid token",
+                            "errors": [{"message": "token is expired"}],
+                        },
+                    )
+                # Retry succeeds
+                return httpx.Response(200, json={"success": True})
+
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "new-token",
+                "refresh_token": "new-refresh",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_refresh_response = httpx.Response(200, json=api_response)
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer old"},
+        )
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_refresh_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+        assert call_count == 2  # Original + retry
+
+    @pytest.mark.asyncio
+    async def test_returns_401_when_refresh_fails(self, tmp_path):
+        """Should return 401 when token refresh fails."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "invalid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                # Return 401 with expiration error to trigger refresh attempt
+                return httpx.Response(
+                    401,
+                    json={
+                        "detail": "Invalid token",
+                        "errors": [{"message": "token is expired"}],
+                    },
+                )
+
+        mock_refresh_response = httpx.Response(401, json={"error": "Invalid refresh"})
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer old"},
+        )
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_refresh_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                response = await transport.handle_async_request(request)
+
+        # Should return original 401 since refresh failed
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_updates_org_id_header_on_retry(self, tmp_path):
+        """Should update X-Scope-OrgID header when retrying with new token."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "valid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        captured_headers = []
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                captured_headers.append(dict(request.headers))
+                if len(captured_headers) == 1:
+                    # Return 401 with expiration error to trigger refresh
+                    return httpx.Response(
+                        401,
+                        json={
+                            "detail": "Invalid token",
+                            "errors": [{"message": "token is expired"}],
+                        },
+                    )
+                return httpx.Response(200, json={"success": True})
+
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": SAMPLE_JWT_WITH_ORG,
+                "refresh_token": "new-refresh",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_refresh_response = httpx.Response(200, json=api_response)
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=get_org_id_from_token,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer old"},
+        )
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_refresh_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+        # Second request should have updated token and org ID
+        assert len(captured_headers) == 2
+        assert f"Bearer {SAMPLE_JWT_WITH_ORG}" in captured_headers[1]["authorization"]
+        assert captured_headers[1].get("x-scope-orgid") == "48eec17d-3089-4d13-a107-24f5f4cf84c7"
+
+    @pytest.mark.asyncio
+    async def test_does_not_refresh_on_non_expiration_401(self):
+        """Should NOT refresh token when 401 is not due to expiration."""
+        call_count = 0
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                nonlocal call_count
+                call_count += 1
+                # Return 401 without expiration error (e.g., invalid token)
+                return httpx.Response(
+                    401,
+                    json={
+                        "detail": "Invalid token",
+                        "errors": [{"message": "auth: unauthorized to validate token"}],
+                    },
+                )
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+        # Should NOT attempt refresh, so no need to patch refresh functions
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 401
+        assert call_count == 1  # Only original request, no retry
+
+    @pytest.mark.asyncio
+    async def test_does_not_refresh_on_revoked_token_401(self):
+        """Should NOT refresh token when 401 is due to revoked token."""
+        call_count = 0
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                nonlocal call_count
+                call_count += 1
+                # Return 401 for revoked API token
+                return httpx.Response(
+                    401,
+                    json={
+                        "detail": "Invalid API token",
+                        "errors": [{"message": "api_token: unauthorized to revoked"}],
+                    },
+                )
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer revoked-token"},
+        )
+
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 401
+        assert call_count == 1  # Only original request, no retry
+
+    @pytest.mark.asyncio
+    async def test_refreshes_on_api_token_expired_401(self, tmp_path):
+        """Should refresh when 401 indicates API token is expired."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "old",
+            "refresh_token": "valid-refresh",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        call_count = 0
+
+        class MockTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # Return 401 with API token expiration error
+                    return httpx.Response(
+                        401,
+                        json={
+                            "detail": "Invalid API token",
+                            "errors": [{"message": "api_token: unauthorized to expired"}],
+                        },
+                    )
+                return httpx.Response(200, json={"success": True})
+
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        api_response = {
+            "token": {
+                "access_token": "new-token",
+                "refresh_token": "new-refresh",
+                "expiry": new_expiry.isoformat(),
+            }
+        }
+        mock_refresh_response = httpx.Response(200, json=api_response)
+
+        transport = TokenRefreshTransport(
+            transport=MockTransport(),
+            get_org_id=lambda token: None,
+        )
+
+        request = httpx.Request(
+            "GET",
+            "https://api.example.com/test",
+            headers={"Authorization": "Bearer old"},
+        )
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            with patch("openfilter_mcp.auth.httpx.AsyncClient") as mock_client:
+                async def async_post(*args, **kwargs):
+                    return mock_refresh_response
+                mock_client.return_value.__aenter__.return_value.post = async_post
+
+                response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+        assert call_count == 2  # Original + retry
+
+
+class TestGetAsyncApiClientWithRetry:
+    """Tests for get_async_api_client_with_retry function."""
+
+    def test_raises_authentication_error_without_token(self):
+        """Should raise AuthenticationError when no token is available."""
+        # Re-import the function to handle module reload from previous tests
+        import openfilter_mcp.auth as auth_module
+        # Reset the cache to ensure no stale token is returned
+        auth_module._reset_token_cache()
+        # Patch read_psctl_token to return None to simulate no token
+        with patch.object(auth_module, "read_psctl_token", return_value=None):
+            with pytest.raises(auth_module.AuthenticationError) as exc_info:
+                auth_module.get_async_api_client_with_retry()
+            assert "No authentication token available" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_creates_client_with_authorization_header(self):
+        """Should create client with Authorization header."""
+        with patch("openfilter_mcp.auth.read_psctl_token", return_value="test-token"):
+            client = get_async_api_client_with_retry()
+            try:
+                assert isinstance(client, httpx.AsyncClient)
+                assert client.headers["Authorization"] == "Bearer test-token"
+                # Should have the base URL set
+                assert str(client.base_url).rstrip("/") == get_api_url()
+            finally:
+                await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_includes_org_header_when_available(self):
+        """Should include X-Scope-OrgID header when token has org_id."""
+        with patch("openfilter_mcp.auth.read_psctl_token", return_value=SAMPLE_JWT_WITH_ORG):
+            client = get_async_api_client_with_retry()
+            try:
+                assert client.headers["X-Scope-OrgID"] == "48eec17d-3089-4d13-a107-24f5f4cf84c7"
+            finally:
+                await client.aclose()

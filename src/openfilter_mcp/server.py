@@ -28,9 +28,11 @@ from fastmcp.tools.tool_transform import ArgTransform
 
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
+    get_api_url,
     get_auth_token,
     get_org_id_from_token,
     AuthenticationError,
+    TokenRefreshTransport,
 )
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
@@ -178,7 +180,8 @@ def create_authenticated_client(timeout: float = 30.0):
         timeout: Request timeout in seconds.
 
     Returns:
-        Configured httpx.AsyncClient instance with schema-stripping middleware.
+        Configured httpx.AsyncClient instance with schema-stripping middleware
+        and automatic 401 retry via token refresh.
 
     Raises:
         AuthenticationError: If no valid token is available.
@@ -193,12 +196,18 @@ def create_authenticated_client(timeout: float = 30.0):
     if org_id:
         headers["X-Scope-OrgID"] = org_id
 
-    # Create base transport and wrap with schema-stripping middleware
+    # Create transport chain: base -> token refresh -> schema stripping
+    # Token refresh handles 401s by refreshing the token and retrying
+    # Schema stripping removes $schema keys from JSON responses
     base_transport = httpx.AsyncHTTPTransport()
-    schema_stripping_transport = SchemaStrippingTransport(base_transport)
+    token_refresh_transport = TokenRefreshTransport(
+        transport=base_transport,
+        get_org_id=get_org_id_from_token,
+    )
+    schema_stripping_transport = SchemaStrippingTransport(token_refresh_transport)
 
     return httpx.AsyncClient(
-        base_url=PLAINSIGHT_API_URL,
+        base_url=get_api_url(),
         headers=headers,
         timeout=timeout,
         transport=schema_stripping_transport,
