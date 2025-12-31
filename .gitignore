@@ -17,4 +17,8 @@ wheels/
 clones/
 indexes/
 openfilter_repos_clones/
+# in case of symlinks
+clones
+indexes
+openfilter_repos_clones
 uv.lock

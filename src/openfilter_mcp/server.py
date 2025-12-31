@@ -2,9 +2,10 @@
 
 Provides tools for interacting with the Plainsight API and code search:
 
-1. **Plainsight API Tools** (auto-generated from OpenAPI):
-   - All Plainsight API endpoints are automatically exposed as MCP tools
-   - Video corpus management, test management, synthetic video generation, etc.
+1. **Entity-Based API Tools** (7 tools instead of 100+):
+   - `list_entity_types`: Discover available entities and their schemas
+   - `create_entity`, `get_entity`, `list_entities`, `update_entity`, `delete_entity`: CRUD operations
+   - `entity_action`: Custom actions like start, stop, cancel
 
 2. **Code Search Tools** (manually defined):
    - Semantic code search on indexed repositories
@@ -22,9 +23,6 @@ import httpx
 from code_context.indexing import INDEXES_DIR
 from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
-from fastmcp.server.openapi import RouteMap, MCPType
-from fastmcp.tools import Tool
-from fastmcp.tools.tool_transform import ArgTransform
 
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
@@ -32,6 +30,7 @@ from openfilter_mcp.auth import (
     get_org_id_from_token,
     AuthenticationError,
 )
+from openfilter_mcp.entity_tools import register_entity_tools
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
 
@@ -249,18 +248,18 @@ def _real_path(path):
 
 
 def create_mcp_server() -> FastMCP:
-    """Create the MCP server with OpenAPI-generated tools and code search tools.
+    """Create the MCP server with entity-based API tools and code search tools.
 
     Returns:
-        A FastMCP server instance with all Plainsight API tools plus code search tools.
+        A FastMCP server instance with entity CRUD tools plus code search tools.
         If no authentication token is available, only code search tools are registered.
     """
-    # Get org_id from token to use as default for X-Scope-OrgID parameter
-    token = get_auth_token()
-    org_id = get_org_id_from_token(token) if token else None
+    # Create base MCP server
+    mcp = FastMCP(name="OpenFilter MCP")
 
     # Try to create authenticated client and load OpenAPI tools
     # If no token is available, we'll still create a server with code search tools
+    token = get_auth_token()
     client = None
     openapi_spec = None
     has_auth = False
@@ -274,61 +273,9 @@ def create_mcp_server() -> FastMCP:
             # Token was available but invalid - proceed without API tools
             pass
 
-    def hide_org_id_param(route, component):
-        """Hide the X-Scope-OrgID parameter from tools since it's auto-injected from the token."""
-        if isinstance(component, Tool) and org_id:
-            # Check if this tool has X-Scope-OrgID parameter
-            if component.parameters and "X-Scope-OrgID" in component.parameters.get("properties", {}):
-                # Transform the tool to hide the X-Scope-OrgID parameter
-                transformed = Tool.from_tool(
-                    component,
-                    transform_args={
-                        "X-Scope-OrgID": ArgTransform(hide=True, default=org_id)
-                    },
-                )
-                # Copy transformed attributes back to component
-                component.parameters = transformed.parameters
-                component.fn = transformed.fn
-
+    # Register entity-based CRUD tools if authenticated
     if has_auth and openapi_spec and client:
-        # Define route mappings - all endpoints become tools except internal and auth
-        route_maps = [
-            # Exclude internal endpoints
-            RouteMap(
-                pattern=r"^/internal/.*",
-                mcp_type=MCPType.EXCLUDE,
-            ),
-            # Exclude auth endpoints - authentication is handled transparently by the MCP wrapper
-            # This prevents agents from attempting to use auth endpoints directly
-            RouteMap(
-                pattern=r"^/auth/.*",
-                mcp_type=MCPType.EXCLUDE,
-            ),
-            # Exclude account management endpoints (signup, email checks, etc.)
-            # These are also auth-related and should not be exposed to agents
-            RouteMap(
-                pattern=r"^/accounts/.*",
-                mcp_type=MCPType.EXCLUDE,
-            ),
-            # All other endpoints become tools
-            RouteMap(
-                methods=["*"],
-                pattern=r".*",
-                mcp_type=MCPType.TOOL,
-            ),
-        ]
-
-        mcp = FastMCP.from_openapi(
-            openapi_spec=openapi_spec,
-            client=client,
-            name="OpenFilter MCP",
-            route_maps=route_maps,
-            timeout=30.0,
-            mcp_component_fn=hide_org_id_param,
-        )
-    else:
-        # No authentication available - create a basic MCP server with only code search tools
-        mcp = FastMCP(name="OpenFilter MCP")
+        register_entity_tools(mcp, client, openapi_spec)
 
     # Get the latest index name for code search tools
     latest_index_name = get_latest_index_name()
