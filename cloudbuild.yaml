@@ -1,10 +1,15 @@
 # Docker build with GPU-accelerated index building via Cloud Run Jobs
-# Triggers: push to main, tag v*
+# Triggers: push to main, tag v*, PR to main
+#
+# PR builds → GAR mcp-builds registry (dev testing, no DockerHub)
+# Main/tag builds → DockerHub (production)
 
 substitutions:
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp
+  _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/mcp-builds/openfilter-mcp
   _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
   _REGION: us-central1
+  _PR_NUMBER: ''  # Set by PR trigger via --substitutions
 
 availableSecrets:
   secretManager:
@@ -37,24 +42,13 @@ steps:
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
         tar xzf /workspace/idx.tar.gz -C /workspace/
 
-  # Docker build and push (only on push to main or version tags, skip for PRs)
+  # Docker build and push
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     args:
       - '-c'
       - |
-        # Only build and push Docker image on push to main or version tags
-        if [[ "${BRANCH_NAME}" != "main" && ! "${TAG_NAME}" =~ ^v ]]; then
-          echo "Skipping Docker build/push for PR branch: ${BRANCH_NAME}"
-          exit 0
-        fi
-
-        echo "Building Docker image for branch: ${BRANCH_NAME}"
-
-        # Docker login
-        echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin
-
         # Set up QEMU for multiplatform builds
         docker run --privileged multiarch/qemu-user-static --reset -p yes
 
@@ -78,14 +72,32 @@ steps:
         docker buildx create --name multiarch-builder --driver docker-container --use
         docker buildx inspect --bootstrap
 
-        # Build tags using Cloud Build substitutions
-        _TAGS="-t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${SHORT_SHA}"
+        # PR builds → GAR only (no DockerHub, no latest tag)
+        if [[ -n "${_PR_NUMBER}" ]]; then
+          echo "PR build #${_PR_NUMBER}: pushing to GAR mcp-builds"
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t ${_GAR_REPO}:pr-${_PR_NUMBER} \
+            -t ${_GAR_REPO}:${SHORT_SHA} \
+            --push \
+            -f Dockerfile.gpu .
+          exit 0
+        fi
+
+        # Main/tag builds → DockerHub
+        echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin
+
+        # Only add 'latest' tag for version tags (v*)
         if [[ "${TAG_NAME}" =~ ^v ]]; then
-          _TAGS="$$_TAGS -t ${_DOCKERHUB_REPO}:${TAG_NAME#v}"
+          echo "Version tag build: ${TAG_NAME}"
+          _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${TAG_NAME#v}"
+        else
+          echo "Main branch build: SHA ${SHORT_SHA}"
+          _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}"
         fi
         echo "Building with tags: $$_TAGS"
 
-        # Build and push multiplatform image
         docker buildx build \
           --platform linux/amd64,linux/arm64 \
           $$_TAGS \
