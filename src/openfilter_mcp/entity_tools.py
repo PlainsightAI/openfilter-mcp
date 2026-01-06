@@ -334,14 +334,38 @@ class EntityRegistry:
         return sorted(self.entities.keys())
 
     def get_entity_info(self) -> dict[str, Any]:
-        """Get detailed info about all entities for discovery."""
+        """Get detailed info about all entities for discovery.
+
+        Returns operation-level details including path templates and required parameters,
+        giving callers the same information they would get from reading the raw OpenAPI spec.
+        """
         result = {}
         for name, entity in sorted(self.entities.items()):
+            # Build detailed operation info
+            operations_detail = {}
+            for op_name, op in entity.operations.items():
+                op_info: dict[str, Any] = {
+                    "method": op.method,
+                    "path": op.path,
+                    "summary": op.summary,
+                }
+                # Only include path_params if there are any
+                if op.path_params:
+                    op_info["path_params"] = op.path_params
+                # Only include query_params if there are any
+                if op.query_params:
+                    op_info["query_params"] = {
+                        k: {"required": v["required"], "description": v.get("description", "")}
+                        for k, v in op.query_params.items()
+                    }
+                # Only include request_schema for operations that have request bodies
+                if op.request_schema:
+                    op_info["request_schema"] = op.request_schema
+                operations_detail[op_name] = op_info
+
             result[name] = {
                 "description": entity.description,
-                "operations": list(entity.operations.keys()),
-                "create_schema": entity.create_schema,
-                "update_schema": entity.update_schema,
+                "operations": operations_detail,
             }
         return result
 
@@ -364,12 +388,39 @@ class EntityToolsHandler:
         except JsonSchemaValidationError as e:
             return [f"{context}: {e.message}"]
 
-    def _build_path(self, path_template: str, path_params: dict[str, str]) -> str:
-        """Build URL path from template and parameters."""
-        path = path_template
-        for name, value in path_params.items():
-            path = path.replace(f"{{{name}}}", str(value))
-        return path
+    def _build_path(
+        self, path_template: str, path_params: dict[str, str]
+    ) -> tuple[str, list[str]]:
+        """Build URL path from template and parameters.
+
+        Returns:
+            A tuple of (path, missing_params) where missing_params is a list
+            of parameter names that were not provided.
+        """
+        # Use format_map with a custom dict that tracks missing keys
+        missing = []
+
+        class TrackingDict(dict):
+            def __missing__(self, key):
+                missing.append(key)
+                return f"{{{key}}}"  # Keep placeholder for error message
+
+        path = path_template.format_map(TrackingDict(path_params))
+        return path, missing
+
+    def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
+        """Handle HTTP response, returning error dict for failures instead of raising."""
+        if response.status_code >= 400:
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            return {
+                "error": f"API error {response.status_code}",
+                "status_code": response.status_code,
+                "details": error_body,
+            }
+        return response.json()
 
     async def create(
         self, entity_type: str, data: dict, path_params: dict[str, str] | None = None
@@ -399,12 +450,18 @@ class EntityToolsHandler:
         for param in op.path_params:
             if param not in path_params and param in data:
                 path_params[param] = data[param]
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         # Make request
         response = await self.client.post(path, json=data)
-        response.raise_for_status()
-        return response.json()
+        return self._handle_response(response)
 
     async def get(
         self, entity_type: str, id: str, path_params: dict[str, str] | None = None
@@ -424,16 +481,22 @@ class EntityToolsHandler:
                 "available_operations": list(entity.operations.keys()),
             }
 
-        # Build path - inject 'id' into first path param if not specified
+        # Build path - inject 'id' into last path param if not specified
         path_params = path_params or {}
         if op.path_params and op.path_params[-1] not in path_params:
             path_params[op.path_params[-1]] = id
 
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         response = await self.client.get(path)
-        response.raise_for_status()
-        return response.json()
+        return self._handle_response(response)
 
     async def list(
         self,
@@ -461,11 +524,20 @@ class EntityToolsHandler:
         for param in op.path_params:
             if param not in path_params and filters and param in filters:
                 path_params[param] = filters.pop(param)
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         # Make request with query params
         response = await self.client.get(path, params=filters or {})
-        response.raise_for_status()
+        if response.status_code >= 400:
+            return self._handle_response(response)
+
         result = response.json()
 
         # Wrap list responses in a dict for MCP compatibility
@@ -505,7 +577,14 @@ class EntityToolsHandler:
         if op.path_params and op.path_params[-1] not in path_params:
             path_params[op.path_params[-1]] = id
 
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         # Use PATCH or PUT based on operation
         if op.method == "PUT":
@@ -513,8 +592,7 @@ class EntityToolsHandler:
         else:
             response = await self.client.patch(path, json=data)
 
-        response.raise_for_status()
-        return response.json()
+        return self._handle_response(response)
 
     async def delete(
         self, entity_type: str, id: str, path_params: dict[str, str] | None = None
@@ -539,7 +617,14 @@ class EntityToolsHandler:
         if op.path_params and op.path_params[-1] not in path_params:
             path_params[op.path_params[-1]] = id
 
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         response = await self.client.delete(path)
 
@@ -547,8 +632,7 @@ class EntityToolsHandler:
         if response.status_code == 204:
             return {"success": True, "message": f"{entity_type} deleted successfully"}
 
-        response.raise_for_status()
-        return response.json()
+        return self._handle_response(response)
 
     async def action(
         self,
@@ -573,12 +657,25 @@ class EntityToolsHandler:
                 "available_operations": list(entity.operations.keys()),
             }
 
+        # Validate request data if schema exists and data provided
+        if data and op.request_schema:
+            errors = self._validate_schema(data, op.request_schema, "Request validation")
+            if errors:
+                return {"error": "Validation failed", "details": errors, "schema": op.request_schema}
+
         # Build path
         path_params = path_params or {}
         if id and op.path_params and op.path_params[-1] not in path_params:
             path_params[op.path_params[-1]] = id
 
-        path = self._build_path(op.path, path_params)
+        path, missing = self._build_path(op.path, path_params)
+
+        if missing:
+            return {
+                "error": f"Missing required path parameters: {missing}",
+                "path_template": op.path,
+                "provided_params": path_params,
+            }
 
         # Handle multipart/form-data (file uploads)
         if op.is_multipart and data:
@@ -619,8 +716,7 @@ class EntityToolsHandler:
         if response.status_code == 204:
             return {"success": True, "message": f"{action} completed successfully"}
 
-        response.raise_for_status()
-        return response.json()
+        return self._handle_response(response)
 
     def get_entity_schemas(self) -> dict[str, Any]:
         """Get all entity schemas for discovery."""
