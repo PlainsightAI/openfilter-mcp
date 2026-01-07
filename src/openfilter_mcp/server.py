@@ -7,10 +7,14 @@ Provides tools for interacting with the Plainsight API and code search:
    - `create_entity`, `get_entity`, `list_entities`, `update_entity`, `delete_entity`: CRUD operations
    - `entity_action`: Custom actions like start, stop, cancel
 
-2. **Code Search Tools** (manually defined):
+2. **Code Search Tools** (manually defined, optional):
    - Semantic code search on indexed repositories
    - Code-to-code similarity search
    - File reading from the indexed monorepo
+
+Configuration:
+    ENABLE_CODE_SEARCH: Set to "true" to enable code search tools (default: "true").
+                        Set to "false" to run the server without code search capabilities.
 """
 
 import asyncio
@@ -286,44 +290,48 @@ def create_mcp_server() -> FastMCP:
     if has_auth and openapi_spec and client:
         register_entity_tools(mcp, client, openapi_spec)
 
-    # Get the latest index name for code search tools
-    latest_index_name = get_latest_index_name()
-
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
     # =========================================================================
 
-    @mcp.tool()
-    def search(query: str, top_k: int = 10) -> Dict[str, Any]:
-        """Searches a semantic index for code matching a natural language description.
+    # Check if code search is enabled (default: true)
+    enable_code_search = os.getenv("ENABLE_CODE_SEARCH", "true").lower() == "true"
 
-        Returns the top_k most relevant chunks with their scores and metadata."""
-        return _search_index(latest_index_name, query, "nl2code", top_k)
+    if enable_code_search:
+        # Get the latest index name for code search tools
+        latest_index_name = get_latest_index_name()
 
-    @mcp.tool()
-    def search_code(code_query: str, top_k: int = 10) -> Dict[str, Any]:
-        """Searches a semantic index for code similar to the provided code snippet.
+        @mcp.tool()
+        def search(query: str, top_k: int = 10) -> Dict[str, Any]:
+            """Searches a semantic index for code matching a natural language description.
 
-        Returns the top_k most relevant chunks with their scores and metadata."""
-        return _search_index(latest_index_name, code_query, "code2code", top_k)
+            Returns the top_k most relevant chunks with their scores and metadata."""
+            return _search_index(latest_index_name, query, "nl2code", top_k)
 
-    @mcp.tool()
-    def get_chunk(chunk_id: int) -> Dict[str, Any]:
-        """Retrieves the content and metadata of a specific chunk by its ID.
+        @mcp.tool()
+        def search_code(code_query: str, top_k: int = 10) -> Dict[str, Any]:
+            """Searches a semantic index for code similar to the provided code snippet.
 
-        Returns: JSON object with filepath, startLine, endLine, and content."""
-        return _get_chunk(latest_index_name, chunk_id)
+            Returns the top_k most relevant chunks with their scores and metadata."""
+            return _search_index(latest_index_name, code_query, "code2code", top_k)
 
-    @mcp.tool()
-    def read_file(filepath: str, start_line: int = 0, line_count: int = 100) -> str:
-        """Reads the content of a virtual file in the monorepo index.
+        @mcp.tool()
+        def get_chunk(chunk_id: int) -> Dict[str, Any]:
+            """Retrieves the content and metadata of a specific chunk by its ID.
 
-        Returns: The content of the file as a string."""
-        with open(_real_path(filepath), "r") as file:
-            content = file.read()
-        lines = content.splitlines()
-        content = "\n".join(lines[start_line : start_line + line_count])
-        return content
+            Returns: JSON object with filepath, startLine, endLine, and content."""
+            return _get_chunk(latest_index_name, chunk_id)
+
+        @mcp.tool()
+        def read_file(filepath: str, start_line: int = 0, line_count: int = 100) -> str:
+            """Reads the content of a virtual file in the monorepo index.
+
+            Returns: The content of the file as a string."""
+            with open(_real_path(filepath), "r") as file:
+                content = file.read()
+            lines = content.splitlines()
+            content = "\n".join(lines[start_line : start_line + line_count])
+            return content
 
     # =========================================================================
     # Generic Polling Tool (only available with authentication)
