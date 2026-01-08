@@ -12,6 +12,7 @@ import pytest
 from openfilter_mcp.auth import (
     DEFAULT_API_URL,
     PLAINSIGHT_API_URL,
+    PLAINSIGHT_EMAIL_DOMAIN,
     AuthenticationError,
     TokenRefreshTransport,
     _async_refresh_token,
@@ -26,8 +27,10 @@ from openfilter_mcp.auth import (
     get_async_api_client,
     get_async_api_client_with_retry,
     get_auth_token,
+    get_effective_org_id,
     get_org_id_from_token,
     get_psctl_token_path,
+    is_plainsight_employee,
     read_psctl_token,
     refresh_and_get_new_token,
 )
@@ -280,6 +283,20 @@ SAMPLE_JWT_WITH_ORG = (
 SAMPLE_JWT_NO_ORG = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
     "eyJhcHBfbWV0YWRhdGEiOnt9LCJ1c2VyX21ldGFkYXRhIjp7fX0."
+    "signature"
+)
+
+# Sample JWT for Plainsight employee (email ends with @plainsight.ai)
+PLAINSIGHT_EMPLOYEE_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJlbWFpbCI6ICJzYW1AcGxhaW5zaWdodC5haSIsICJhcHBfbWV0YWRhdGEiOiB7Im9yZ2FuaXphdGlvbl9pZCI6ICJwbGFpbnNpZ2h0LW9yZy1pZCJ9LCAidXNlcl9tZXRhZGF0YSI6IHt9fQ."
+    "signature"
+)
+
+# Sample JWT for non-employee (external customer)
+NON_EMPLOYEE_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJlbWFpbCI6ICJjdXN0b21lckBtY2RvbmFsZHMuY29tIiwgImFwcF9tZXRhZGF0YSI6IHsib3JnYW5pemF0aW9uX2lkIjogIm1jZG9uYWxkcy1vcmctaWQifSwgInVzZXJfbWV0YWRhdGEiOiB7fX0."
     "signature"
 )
 
@@ -1316,3 +1333,71 @@ class TestGetAsyncApiClientWithRetry:
                 assert client.headers["X-Scope-OrgID"] == "48eec17d-3089-4d13-a107-24f5f4cf84c7"
             finally:
                 await client.aclose()
+
+
+class TestIsPlainsightEmployee:
+    """Tests for is_plainsight_employee function."""
+
+    def test_returns_true_for_plainsight_email(self):
+        """Should return True for users with @plainsight.ai email."""
+        assert is_plainsight_employee(PLAINSIGHT_EMPLOYEE_JWT) is True
+
+    def test_returns_false_for_non_plainsight_email(self):
+        """Should return False for users without @plainsight.ai email."""
+        assert is_plainsight_employee(NON_EMPLOYEE_JWT) is False
+
+    def test_returns_false_for_token_without_email(self):
+        """Should return False when token has no email field."""
+        assert is_plainsight_employee(SAMPLE_JWT_WITH_ORG) is False
+
+    def test_returns_false_for_invalid_token(self):
+        """Should return False for invalid token."""
+        assert is_plainsight_employee("invalid-token") is False
+        assert is_plainsight_employee("") is False
+
+    def test_case_insensitive_email_check(self):
+        """Should match email domain case-insensitively."""
+        # The email domain check should be case-insensitive
+        assert PLAINSIGHT_EMAIL_DOMAIN == "@plainsight.ai"
+
+
+class TestGetEffectiveOrgId:
+    """Tests for get_effective_org_id function (cross-tenant support)."""
+
+    def test_returns_token_org_when_no_target_specified(self):
+        """Should return org ID from token when no target_org_id is specified."""
+        org_id = get_effective_org_id(PLAINSIGHT_EMPLOYEE_JWT)
+        assert org_id == "plainsight-org-id"
+
+    def test_returns_target_org_for_plainsight_employee(self):
+        """Should return target org ID when user is a Plainsight employee."""
+        org_id = get_effective_org_id(PLAINSIGHT_EMPLOYEE_JWT, target_org_id="mcdonalds-org-id")
+        assert org_id == "mcdonalds-org-id"
+
+    def test_ignores_target_org_for_non_employee(self):
+        """Should ignore target_org_id for non-Plainsight employees."""
+        org_id = get_effective_org_id(NON_EMPLOYEE_JWT, target_org_id="other-org-id")
+        # Should return the user's own org, not the target
+        assert org_id == "mcdonalds-org-id"
+
+    def test_returns_token_org_when_target_is_none(self):
+        """Should return token org ID when target_org_id is None."""
+        org_id = get_effective_org_id(PLAINSIGHT_EMPLOYEE_JWT, target_org_id=None)
+        assert org_id == "plainsight-org-id"
+
+    def test_returns_none_for_token_without_org(self):
+        """Should return None when token has no org and no target set."""
+        org_id = get_effective_org_id(SAMPLE_JWT_NO_ORG)
+        assert org_id is None
+
+    def test_returns_target_for_token_without_org_if_employee(self):
+        """Should return target org for employee even if token has no org."""
+        # Create a JWT with plainsight email but no org
+        import base64
+        import json
+        payload = {"email": "test@plainsight.ai"}
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        plainsight_no_org_jwt = f"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.{encoded}.signature"
+
+        org_id = get_effective_org_id(plainsight_no_org_jwt, target_org_id="target-org")
+        assert org_id == "target-org"
