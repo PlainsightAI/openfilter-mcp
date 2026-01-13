@@ -131,6 +131,65 @@ def get_org_id_from_token(token: str) -> Optional[str]:
     return None
 
 
+# Plainsight organization identifier (email domain for employees)
+PLAINSIGHT_EMAIL_DOMAIN = "@plainsight.ai"
+
+
+def is_plainsight_employee(token: str) -> bool:
+    """Check if the token belongs to a Plainsight employee.
+
+    Plainsight employees are identified by having an email address
+    ending with @plainsight.ai.
+
+    Args:
+        token: The JWT token string.
+
+    Returns:
+        True if the user is a Plainsight employee, False otherwise.
+    """
+    payload = decode_jwt_payload(token)
+    if not payload:
+        return False
+
+    # Check email in the token payload
+    email = payload.get("email", "")
+    if isinstance(email, str) and email.lower().endswith(PLAINSIGHT_EMAIL_DOMAIN):
+        return True
+
+    return False
+
+
+def get_effective_org_id(token: str, target_org_id: Optional[str] = None) -> Optional[str]:
+    """Get the effective organization ID to use for API requests.
+
+    For Plainsight employees, allows specifying a target org ID to enable
+    cross-tenant operations. Non-employees can only access their own org.
+
+    Args:
+        token: The JWT token string.
+        target_org_id: Optional target organization ID for cross-tenant access.
+                       Only works for Plainsight employees (@plainsight.ai).
+
+    Returns:
+        The organization ID to use in X-Scope-OrgID header, or None.
+    """
+    if target_org_id:
+        # Allow cross-tenant operations for Plainsight employees
+        if is_plainsight_employee(token):
+            logger.debug(
+                f"Cross-tenant access enabled: using target org {target_org_id}"
+            )
+            return target_org_id
+        else:
+            logger.warning(
+                "Target org ID specified but user is not a Plainsight employee. "
+                "Cross-tenant access denied."
+            )
+            # Fall through to use the token's org ID
+
+    return get_org_id_from_token(token)
+
+
 def get_psctl_token_path() -> Path:
     """Get the path to the psctl token file using platformdirs.
 
@@ -420,7 +479,8 @@ def get_api_client(timeout: float = 30.0) -> httpx.Client:
 
     The client automatically includes the Authorization header with the
     bearer token from the current request context, and the X-Scope-OrgID
-    header if the token contains organization information.
+    header based on the effective organization (supports cross-tenant
+    operations for Plainsight employees).
 
     Args:
         timeout: Request timeout in seconds.
@@ -437,8 +497,8 @@ def get_api_client(timeout: float = 30.0) -> httpx.Client:
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Add organization ID header if available in the token
-    org_id = get_org_id_from_token(token)
+    # Add organization ID header (supports cross-tenant for Plainsight employees)
+    org_id = get_effective_org_id(token)
     if org_id:
         headers["X-Scope-OrgID"] = org_id
 
@@ -478,7 +538,8 @@ def get_async_api_client(timeout: float = 30.0) -> httpx.AsyncClient:
 
     The client automatically includes the Authorization header with the
     bearer token from the current request context, and the X-Scope-OrgID
-    header if the token contains organization information.
+    header based on the effective organization (supports cross-tenant
+    operations for Plainsight employees).
 
     Args:
         timeout: Request timeout in seconds.
@@ -495,8 +556,8 @@ def get_async_api_client(timeout: float = 30.0) -> httpx.AsyncClient:
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Add organization ID header if available in the token
-    org_id = get_org_id_from_token(token)
+    # Add organization ID header (supports cross-tenant for Plainsight employees)
+    org_id = get_effective_org_id(token)
     if org_id:
         headers["X-Scope-OrgID"] = org_id
 
@@ -663,6 +724,8 @@ def get_async_api_client_with_retry(timeout: float = 30.0) -> httpx.AsyncClient:
     2. Attempting to refresh the token using the stored refresh token
     3. Retrying the original request with the new token
 
+    Supports cross-tenant operations for Plainsight employees via PS_TARGET_ORG_ID.
+
     Args:
         timeout: Request timeout in seconds.
 
@@ -678,8 +741,8 @@ def get_async_api_client_with_retry(timeout: float = 30.0) -> httpx.AsyncClient:
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Add organization ID header if available in the token
-    org_id = get_org_id_from_token(token)
+    # Add organization ID header (supports cross-tenant for Plainsight employees)
+    org_id = get_effective_org_id(token)
     if org_id:
         headers["X-Scope-OrgID"] = org_id
 
@@ -687,7 +750,7 @@ def get_async_api_client_with_retry(timeout: float = 30.0) -> httpx.AsyncClient:
     base_transport = httpx.AsyncHTTPTransport()
     refresh_transport = TokenRefreshTransport(
         transport=base_transport,
-        get_org_id=get_org_id_from_token,
+        get_org_id=get_effective_org_id,
     )
 
     return httpx.AsyncClient(

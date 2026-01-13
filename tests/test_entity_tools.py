@@ -306,7 +306,9 @@ class TestEntityToolsHandler:
         result = await handler.create("project", {"name": "Test Project"})
 
         assert result == {"id": "123", "name": "Test Project"}
-        mock_client.post.assert_called_once_with("/projects", json={"name": "Test Project"})
+        mock_client.post.assert_called_once_with(
+            "/projects", json={"name": "Test Project"}, headers=None
+        )
 
     @pytest.mark.asyncio
     async def test_create_entity_validation_error(self, handler, mock_client):
@@ -338,7 +340,7 @@ class TestEntityToolsHandler:
         result = await handler.get("project", "123")
 
         assert result == {"id": "123", "name": "Test Project"}
-        mock_client.get.assert_called_once_with("/projects/123")
+        mock_client.get.assert_called_once_with("/projects/123", headers=None)
 
     @pytest.mark.asyncio
     async def test_list_entities_success(self, handler, mock_client):
@@ -353,7 +355,7 @@ class TestEntityToolsHandler:
 
         # List responses are wrapped in a dict with items and count
         assert result == {"items": [{"id": "1"}, {"id": "2"}], "count": 2}
-        mock_client.get.assert_called_once_with("/projects", params={"limit": 10})
+        mock_client.get.assert_called_once_with("/projects", params={"limit": 10}, headers=None)
 
     @pytest.mark.asyncio
     async def test_update_entity_success(self, handler, mock_client):
@@ -367,7 +369,7 @@ class TestEntityToolsHandler:
         result = await handler.update("project", "123", {"name": "Updated"})
 
         assert result == {"id": "123", "name": "Updated"}
-        mock_client.patch.assert_called_once_with("/projects/123", json={"name": "Updated"})
+        mock_client.patch.assert_called_once_with("/projects/123", json={"name": "Updated"}, headers=None)
 
     @pytest.mark.asyncio
     async def test_delete_entity_success(self, handler, mock_client):
@@ -380,7 +382,7 @@ class TestEntityToolsHandler:
         result = await handler.delete("project", "123")
 
         assert result["success"] is True
-        mock_client.delete.assert_called_once_with("/projects/123")
+        mock_client.delete.assert_called_once_with("/projects/123", headers=None)
 
     @pytest.mark.asyncio
     async def test_action_success(self, handler, mock_client):
@@ -394,7 +396,7 @@ class TestEntityToolsHandler:
         result = await handler.action("training", "cancel", id="123")
 
         assert result == {"status": "cancelled"}
-        mock_client.post.assert_called_once_with("/trainings/123/cancel", json={})
+        mock_client.post.assert_called_once_with("/trainings/123/cancel", json={}, headers=None)
 
     @pytest.mark.asyncio
     async def test_nested_resource_with_path_params(self, handler, mock_client):
@@ -413,7 +415,7 @@ class TestEntityToolsHandler:
 
         assert result == {"id": "model-1", "name": "My Model"}
         mock_client.post.assert_called_once_with(
-            "/projects/proj-123/models", json={"name": "My Model"}
+            "/projects/proj-123/models", json={"name": "My Model"}, headers=None
         )
 
     @pytest.mark.asyncio

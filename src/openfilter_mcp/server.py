@@ -32,7 +32,8 @@ from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
     get_api_url,
     get_auth_token,
-    get_org_id_from_token,
+    get_effective_org_id,
+    is_plainsight_employee,
     AuthenticationError,
     TokenRefreshTransport,
 )
@@ -179,6 +180,8 @@ class SchemaStrippingTransport(httpx.AsyncBaseTransport):
 def create_authenticated_client(timeout: float = 30.0):
     """Create an authenticated async HTTP client for Plainsight API.
 
+    Supports cross-tenant operations for Plainsight employees via PS_TARGET_ORG_ID.
+
     Args:
         timeout: Request timeout in seconds.
 
@@ -195,7 +198,8 @@ def create_authenticated_client(timeout: float = 30.0):
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    org_id = get_org_id_from_token(token)
+    # Use effective org ID (supports cross-tenant for Plainsight employees)
+    org_id = get_effective_org_id(token)
     if org_id:
         headers["X-Scope-OrgID"] = org_id
 
@@ -205,7 +209,7 @@ def create_authenticated_client(timeout: float = 30.0):
     base_transport = httpx.AsyncHTTPTransport()
     token_refresh_transport = TokenRefreshTransport(
         transport=base_transport,
-        get_org_id=get_org_id_from_token,
+        get_org_id=get_effective_org_id,
     )
     schema_stripping_transport = SchemaStrippingTransport(token_refresh_transport)
 
@@ -338,6 +342,16 @@ def create_mcp_server() -> FastMCP:
     # =========================================================================
 
     if has_auth and client:
+
+        def _get_cross_tenant_headers(org_id: str | None) -> Dict[str, str] | None:
+            """Get headers for cross-tenant access if allowed."""
+            if not org_id:
+                return None
+            token = get_auth_token()
+            if token and is_plainsight_employee(token):
+                return {"X-Scope-OrgID": org_id}
+            return None
+
         @mcp.tool()
         async def poll_until_change(
             endpoint: str,
@@ -345,6 +359,7 @@ def create_mcp_server() -> FastMCP:
             target_values: str,
             poll_interval_seconds: int = 5,
             timeout_seconds: int = 600,
+            org_id: str | None = None,
         ) -> Dict[str, Any]:
             """Poll an API endpoint until a field reaches one of the target values.
 
@@ -356,6 +371,7 @@ def create_mcp_server() -> FastMCP:
                 target_values: Comma-separated list of values that indicate completion (e.g., "completed,failed,cancelled").
                 poll_interval_seconds: How often to check (default: 5 seconds).
                 timeout_seconds: Maximum time to wait (default: 600 seconds = 10 minutes).
+                org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
             Returns:
                 Object with status ("completed" or "timeout"), the final result, and elapsed time.
@@ -369,9 +385,10 @@ def create_mcp_server() -> FastMCP:
             targets = [v.strip() for v in target_values.split(",")]
             elapsed = 0
             last_value = None
+            headers = _get_cross_tenant_headers(org_id)
 
             while elapsed < timeout_seconds:
-                response = await client.get(endpoint)
+                response = await client.get(endpoint, headers=headers)
                 response.raise_for_status()
                 data = response.json()
 

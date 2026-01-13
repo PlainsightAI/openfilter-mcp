@@ -57,7 +57,7 @@ class TestAuthenticatedClient:
             "openfilter_mcp.server.get_auth_token", return_value="test-token-123"
         ):
             with patch(
-                "openfilter_mcp.server.get_org_id_from_token", return_value="org-456"
+                "openfilter_mcp.server.get_effective_org_id", return_value="org-456"
             ):
                 from openfilter_mcp.server import create_authenticated_client
 
@@ -72,7 +72,7 @@ class TestAuthenticatedClient:
             "openfilter_mcp.server.get_auth_token", return_value="simple-token"
         ):
             with patch(
-                "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                "openfilter_mcp.server.get_effective_org_id", return_value=None
             ):
                 from openfilter_mcp.server import create_authenticated_client
 
@@ -159,7 +159,7 @@ class TestMCPServerCreation:
                 "openfilter_mcp.server.get_auth_token", return_value="test-token"
             ):
                 with patch(
-                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                    "openfilter_mcp.server.get_effective_org_id", return_value=None
                 ):
                     with patch(
                         "openfilter_mcp.server.get_latest_index_name",
@@ -199,7 +199,7 @@ class TestCodeSearchTools:
                 "openfilter_mcp.server.get_auth_token", return_value="test-token"
             ):
                 with patch(
-                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                    "openfilter_mcp.server.get_effective_org_id", return_value=None
                 ):
                     with patch(
                         "openfilter_mcp.server.get_latest_index_name",
@@ -412,7 +412,7 @@ class TestAuthEndpointFiltering:
                 "openfilter_mcp.server.get_auth_token", return_value="test-token"
             ):
                 with patch(
-                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                    "openfilter_mcp.server.get_effective_org_id", return_value=None
                 ):
                     with patch(
                         "openfilter_mcp.server.get_latest_index_name",
@@ -466,7 +466,7 @@ class TestAuthEndpointFiltering:
                 "openfilter_mcp.server.get_auth_token", return_value="test-token"
             ):
                 with patch(
-                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                    "openfilter_mcp.server.get_effective_org_id", return_value=None
                 ):
                     with patch(
                         "openfilter_mcp.server.get_latest_index_name",
@@ -520,7 +520,7 @@ class TestAuthEndpointFiltering:
                 "openfilter_mcp.server.get_auth_token", return_value="test-token"
             ):
                 with patch(
-                    "openfilter_mcp.server.get_org_id_from_token", return_value=None
+                    "openfilter_mcp.server.get_effective_org_id", return_value=None
                 ):
                     with patch(
                         "openfilter_mcp.server.get_latest_index_name",

@@ -8,8 +8,12 @@ we expose generic operations: `create_entity`, `get_entity`, `list_entities`, `u
 `delete_entity`, plus a discovery tool `list_entity_types`.
 
 Schema validation is performed using JSON Schema validation from the OpenAPI spec.
+
+Cross-tenant support: Plainsight employees (@plainsight.ai) can pass an optional `org_id`
+parameter to access resources in other organizations.
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,6 +22,10 @@ from typing import Any
 import httpx
 import jsonschema
 from jsonschema import ValidationError as JsonSchemaValidationError
+
+from openfilter_mcp.auth import get_auth_token, is_plainsight_employee
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -371,7 +379,10 @@ class EntityRegistry:
 
 
 class EntityToolsHandler:
-    """Handler for entity-based CRUD operations with validation."""
+    """Handler for entity-based CRUD operations with validation.
+
+    Supports cross-tenant access for Plainsight employees via optional org_id parameter.
+    """
 
     def __init__(self, client: httpx.AsyncClient, registry: EntityRegistry):
         self.client = client
@@ -422,8 +433,41 @@ class EntityToolsHandler:
             }
         return response.json()
 
+    def _get_headers_for_org(self, org_id: str | None) -> dict[str, str] | None:
+        """Get request headers for cross-tenant access.
+
+        Args:
+            org_id: Target organization ID for cross-tenant access.
+
+        Returns:
+            Headers dict with X-Scope-OrgID if cross-tenant access is allowed,
+            None otherwise (uses client's default headers).
+        """
+        if not org_id:
+            return None
+
+        # Check if user is a Plainsight employee
+        token = get_auth_token()
+        if not token:
+            logger.warning("No auth token available for cross-tenant check")
+            return None
+
+        if is_plainsight_employee(token):
+            logger.debug(f"Cross-tenant access: using org_id {org_id}")
+            return {"X-Scope-OrgID": org_id}
+        else:
+            logger.warning(
+                f"Cross-tenant access denied: user is not a Plainsight employee. "
+                f"Ignoring org_id={org_id}"
+            )
+            return None
+
     async def create(
-        self, entity_type: str, data: dict, path_params: dict[str, str] | None = None
+        self,
+        entity_type: str,
+        data: dict,
+        path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new entity."""
         entity = self.registry.get_entity(entity_type)
@@ -459,12 +503,17 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request
-        response = await self.client.post(path, json=data)
+        # Make request with optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+        response = await self.client.post(path, json=data, headers=headers)
         return self._handle_response(response)
 
     async def get(
-        self, entity_type: str, id: str, path_params: dict[str, str] | None = None
+        self,
+        entity_type: str,
+        id: str,
+        path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Get an entity by ID."""
         entity = self.registry.get_entity(entity_type)
@@ -495,7 +544,9 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        response = await self.client.get(path)
+        # Make request with optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+        response = await self.client.get(path, headers=headers)
         return self._handle_response(response)
 
     async def list(
@@ -503,6 +554,7 @@ class EntityToolsHandler:
         entity_type: str,
         filters: dict[str, Any] | None = None,
         path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """List entities with optional filters."""
         entity = self.registry.get_entity(entity_type)
@@ -533,8 +585,9 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with query params
-        response = await self.client.get(path, params=filters or {})
+        # Make request with query params and optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+        response = await self.client.get(path, params=filters or {}, headers=headers)
         if response.status_code >= 400:
             return self._handle_response(response)
 
@@ -551,6 +604,7 @@ class EntityToolsHandler:
         id: str,
         data: dict,
         path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Update an entity."""
         entity = self.registry.get_entity(entity_type)
@@ -586,16 +640,23 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
+        # Make request with optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+
         # Use PATCH or PUT based on operation
         if op.method == "PUT":
-            response = await self.client.put(path, json=data)
+            response = await self.client.put(path, json=data, headers=headers)
         else:
-            response = await self.client.patch(path, json=data)
+            response = await self.client.patch(path, json=data, headers=headers)
 
         return self._handle_response(response)
 
     async def delete(
-        self, entity_type: str, id: str, path_params: dict[str, str] | None = None
+        self,
+        entity_type: str,
+        id: str,
+        path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Delete an entity."""
         entity = self.registry.get_entity(entity_type)
@@ -626,7 +687,9 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        response = await self.client.delete(path)
+        # Make request with optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+        response = await self.client.delete(path, headers=headers)
 
         # Handle 204 No Content
         if response.status_code == 204:
@@ -641,6 +704,7 @@ class EntityToolsHandler:
         id: str | None = None,
         data: dict | None = None,
         path_params: dict[str, str] | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a custom action on an entity (start, stop, cancel, etc.)."""
         entity = self.registry.get_entity(entity_type)
@@ -677,6 +741,9 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
+        # Get optional cross-tenant headers
+        headers = self._get_headers_for_org(org_id)
+
         # Handle multipart/form-data (file uploads)
         if op.is_multipart and data:
             files = {}
@@ -698,18 +765,18 @@ class EntityToolsHandler:
                 else:
                     form_data[key] = value
 
-            response = await self.client.post(path, files=files, data=form_data)
+            response = await self.client.post(path, files=files, data=form_data, headers=headers)
         # Make request based on method
         elif op.method == "GET":
-            response = await self.client.get(path, params=data or {})
+            response = await self.client.get(path, params=data or {}, headers=headers)
         elif op.method == "POST":
-            response = await self.client.post(path, json=data or {})
+            response = await self.client.post(path, json=data or {}, headers=headers)
         elif op.method == "PUT":
-            response = await self.client.put(path, json=data or {})
+            response = await self.client.put(path, json=data or {}, headers=headers)
         elif op.method == "PATCH":
-            response = await self.client.patch(path, json=data or {})
+            response = await self.client.patch(path, json=data or {}, headers=headers)
         elif op.method == "DELETE":
-            response = await self.client.delete(path)
+            response = await self.client.delete(path, headers=headers)
         else:
             return {"error": f"Unsupported HTTP method: {op.method}"}
 
@@ -743,11 +810,17 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         """
         return handler.get_entity_schemas()
 
+    # Cross-tenant org_id docstring fragment for reuse
+    _ORG_ID_DOC = """org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
+                If provided, the request will be scoped to the specified organization
+                instead of the user's default organization."""
+
     @mcp.tool()
     async def create_entity(
         entity_type: str,
         data: dict,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new entity of the specified type.
 
@@ -757,17 +830,19 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             data: The entity data matching the create schema.
             path_params: Optional path parameters for nested resources
                         (e.g., {'project_id': 'abc123'} for project-scoped entities).
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             The created entity data or an error with validation details.
         """
-        return await handler.create(entity_type, data, path_params)
+        return await handler.create(entity_type, data, path_params, org_id)
 
     @mcp.tool()
     async def get_entity(
         entity_type: str,
         id: str,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Get an entity by its ID.
 
@@ -775,17 +850,19 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             entity_type: The type of entity to retrieve.
             id: The entity's unique identifier.
             path_params: Optional path parameters for nested resources.
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             The entity data or an error if not found.
         """
-        return await handler.get(entity_type, id, path_params)
+        return await handler.get(entity_type, id, path_params, org_id)
 
     @mcp.tool()
     async def list_entities(
         entity_type: str,
         filters: dict | None = None,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """List entities of the specified type with optional filtering.
 
@@ -794,11 +871,12 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             filters: Optional query parameters for filtering/pagination
                     (e.g., {'limit': 10, 'status': 'active'}).
             path_params: Optional path parameters for nested resources.
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             A list of entities or paginated response.
         """
-        return await handler.list(entity_type, filters, path_params)
+        return await handler.list(entity_type, filters, path_params, org_id)
 
     @mcp.tool()
     async def update_entity(
@@ -806,6 +884,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str,
         data: dict,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing entity.
 
@@ -814,17 +893,19 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             id: The entity's unique identifier.
             data: The fields to update (partial update supported).
             path_params: Optional path parameters for nested resources.
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             The updated entity data or an error with validation details.
         """
-        return await handler.update(entity_type, id, data, path_params)
+        return await handler.update(entity_type, id, data, path_params, org_id)
 
     @mcp.tool()
     async def delete_entity(
         entity_type: str,
         id: str,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Delete an entity by its ID.
 
@@ -832,11 +913,12 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             entity_type: The type of entity to delete.
             id: The entity's unique identifier.
             path_params: Optional path parameters for nested resources.
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             Success confirmation or an error.
         """
-        return await handler.delete(entity_type, id, path_params)
+        return await handler.delete(entity_type, id, path_params, org_id)
 
     @mcp.tool()
     async def entity_action(
@@ -845,6 +927,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str | None = None,
         data: dict | None = None,
         path_params: dict | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a custom action on an entity (start, stop, cancel, etc.).
 
@@ -854,8 +937,9 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             id: The entity's unique identifier (if action targets specific entity).
             data: Optional data for the action.
             path_params: Optional path parameters for nested resources.
+            org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:
             Action result or an error.
         """
-        return await handler.action(entity_type, action, id, data, path_params)
+        return await handler.action(entity_type, action, id, data, path_params, org_id)
