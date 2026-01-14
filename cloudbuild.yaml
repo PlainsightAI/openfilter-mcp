@@ -1,12 +1,13 @@
 # Docker build with GPU-accelerated index building via Cloud Run Jobs
 # Triggers: push to main, tag v*, PR to main
 #
-# PR builds → GAR mcp-builds registry (dev testing, no DockerHub)
+# PR builds → GAR oci registry (dev testing, no DockerHub)
+# Dev tag builds (v*-dev) → GAR oci registry (dev testing, no DockerHub)
 # Main/tag builds → DockerHub (production)
 
 substitutions:
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp
-  _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/mcp-builds/openfilter-mcp
+  _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/oci/openfilter-mcp
   _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
   _REGION: us-central1
   _PR_NUMBER: ''  # Set by PR trigger via --substitutions
@@ -74,11 +75,24 @@ steps:
 
         # PR builds → GAR only (no DockerHub, no latest tag)
         if [[ -n "${_PR_NUMBER}" ]]; then
-          echo "PR build #${_PR_NUMBER}: pushing to GAR mcp-builds"
+          echo "PR build #${_PR_NUMBER}: pushing to GAR oci"
           gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -t ${_GAR_REPO}:pr-${_PR_NUMBER} \
+            -t ${_GAR_REPO}:${SHORT_SHA} \
+            --push \
+            -f Dockerfile.gpu .
+          exit 0
+        fi
+
+        # Dev tag builds (v*-dev) → GAR only
+        if [[ "${TAG_NAME}" =~ ^v.*-dev$ ]]; then
+          echo "Dev tag build: ${TAG_NAME} → pushing to GAR oci"
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t ${_GAR_REPO}:${TAG_NAME#v} \
             -t ${_GAR_REPO}:${SHORT_SHA} \
             --push \
             -f Dockerfile.gpu .
