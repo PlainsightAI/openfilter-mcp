@@ -1,12 +1,13 @@
 # Docker build with GPU-accelerated index building via Cloud Run Jobs
 # Triggers: push to main, tag v*, PR to main
 #
-# PR builds → GAR mcp-builds registry (dev testing, no DockerHub)
+# PR builds → GAR oci registry (dev testing, no DockerHub)
+# Dev tag builds (v*-dev) → GAR oci registry (dev testing, no DockerHub)
 # Main/tag builds → DockerHub (production)
 
 substitutions:
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp
-  _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/mcp-builds/openfilter-mcp
+  _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/oci/openfilter-mcp
   _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
   _REGION: us-central1
   _PR_NUMBER: ''  # Set by PR trigger via --substitutions
@@ -74,7 +75,7 @@ steps:
 
         # PR builds → GAR only (no DockerHub, no latest tag)
         if [[ -n "${_PR_NUMBER}" ]]; then
-          echo "PR build #${_PR_NUMBER}: pushing to GAR mcp-builds"
+          echo "PR build #${_PR_NUMBER}: pushing to GAR oci"
           gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
@@ -85,13 +86,53 @@ steps:
           exit 0
         fi
 
+        # Dev tag builds (v*-dev) → GAR only
+        if [[ "${TAG_NAME}" =~ ^v.*-dev$ ]]; then
+          echo "Dev tag build: ${TAG_NAME} → pushing to GAR oci"
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t ${_GAR_REPO}:${TAG_NAME#v} \
+            -t ${_GAR_REPO}:${SHORT_SHA} \
+            --push \
+            -f Dockerfile.gpu .
+          exit 0
+        fi
+
         # Main/tag builds → DockerHub
         echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin
 
-        # Only add 'latest' tag for version tags (v*)
+        # Only add 'latest' tag for version tags (v*) if newer than current latest
         if [[ "${TAG_NAME}" =~ ^v ]]; then
           echo "Version tag build: ${TAG_NAME}"
-          _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${TAG_NAME#v}"
+          NEW_VERSION="${TAG_NAME#v}"
+
+          # Fetch current latest version from DockerHub by finding which semver tag shares latest's digest
+          LATEST_DIGEST=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/latest" | \
+            jq -r '.images[0].digest // empty')
+
+          if [[ -n "$LATEST_DIGEST" ]]; then
+            # Find the v* tag that matches this digest
+            CURRENT_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
+              jq -r --arg digest "$LATEST_DIGEST" \
+              '.results[] | select(.images[].digest == $digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))' | \
+              sed 's/^v//' | head -1)
+          fi
+          CURRENT_VERSION="${CURRENT_VERSION:-0.0.0}"
+          echo "Current latest version: $CURRENT_VERSION, New version: $NEW_VERSION"
+
+          # Compare versions (semver): returns 0 if $1 >= $2
+          version_gte() {
+            [ "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+          }
+
+          if version_gte "$NEW_VERSION" "$CURRENT_VERSION"; then
+            echo "New version $NEW_VERSION >= current $CURRENT_VERSION, tagging as latest"
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${NEW_VERSION}"
+          else
+            echo "New version $NEW_VERSION < current $CURRENT_VERSION, skipping latest tag"
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:${NEW_VERSION}"
+          fi
         else
           echo "Main branch build: SHA ${SHORT_SHA}"
           _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}"
