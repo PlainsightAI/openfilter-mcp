@@ -43,6 +43,14 @@ steps:
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
         tar xzf /workspace/idx.tar.gz -C /workspace/
 
+        # Configure GAR auth for PR and dev builds
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
+          # Get access token and save it for the docker step
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          ACCESS_TOKEN=$$(gcloud auth print-access-token)
+          echo "$$ACCESS_TOKEN" > /workspace/.gar_token
+        fi
+
   # Docker build and push
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
@@ -52,6 +60,22 @@ steps:
       - |
         # Set up QEMU for multiplatform builds
         docker run --privileged multiarch/qemu-user-static --reset -p yes
+
+        # Configure GAR auth if this is a PR or dev build
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
+          # Create docker config with credentials stored directly (not via credential helper)
+          # This is needed because the buildx container doesn't have docker-credential-gcloud
+          if [[ -f /workspace/.gar_token ]]; then
+            GAR_TOKEN=$$(cat /workspace/.gar_token)
+            # Use the auth format that docker expects (base64 encoded username:password)
+            AUTH_B64=$$(echo -n "oauth2accesstoken:$$GAR_TOKEN" | base64 -w0)
+            mkdir -p /builder/home/.docker
+            # Create config.json with the auth entry using printf to avoid YAML issues
+            printf '{\n  "auths": {\n    "us-west1-docker.pkg.dev": {\n      "auth": "%s"\n    }\n  }\n}\n' "$$AUTH_B64" > /builder/home/.docker/config.json
+            echo "GAR auth configured for us-west1-docker.pkg.dev"
+            cat /builder/home/.docker/config.json
+          fi
+        fi
 
         # Create Dockerfile
         cat > Dockerfile.gpu << 'EOF'
@@ -70,14 +94,18 @@ steps:
         EOF
 
         # Create buildx builder with docker-container driver for multiplatform support
-        docker buildx create --name multiarch-builder --driver docker-container --use
+        # Pass the docker config to buildkit via environment variable
+        docker buildx rm multiarch-builder 2>/dev/null || true
+        DOCKER_CONFIG=/builder/home/.docker docker buildx create --name multiarch-builder \
+          --driver docker-container \
+          --use
         docker buildx inspect --bootstrap
 
         # PR builds → GAR only (no DockerHub, no latest tag)
         if [[ -n "${_PR_NUMBER}" ]]; then
           echo "PR build #${_PR_NUMBER}: pushing to GAR oci"
-          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
-          docker buildx build \
+          # Set DOCKER_CONFIG for buildx to find credentials
+          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -t ${_GAR_REPO}:pr-${_PR_NUMBER} \
             -t ${_GAR_REPO}:${SHORT_SHA} \
@@ -87,12 +115,15 @@ steps:
         fi
 
         # Dev tag builds (v*-dev) → GAR only
-        if [[ "${TAG_NAME}" =~ ^v.*-dev$ ]]; then
+        if [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
           echo "Dev tag build: ${TAG_NAME} → pushing to GAR oci"
-          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
-          docker buildx build \
+          # Extract version without v prefix using sed
+          DEV_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
+          echo "TAG_NAME=${TAG_NAME}, DEV_VERSION=$$DEV_VERSION"
+          # Set DOCKER_CONFIG for buildx to find credentials
+          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            -t ${_GAR_REPO}:${TAG_NAME#v} \
+            -t ${_GAR_REPO}:$$DEV_VERSION \
             -t ${_GAR_REPO}:${SHORT_SHA} \
             --push \
             -f Dockerfile.gpu .
@@ -105,33 +136,33 @@ steps:
         # Only add 'latest' tag for version tags (v*) if newer than current latest
         if [[ "${TAG_NAME}" =~ ^v ]]; then
           echo "Version tag build: ${TAG_NAME}"
-          NEW_VERSION="${TAG_NAME#v}"
+          NEW_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
 
           # Fetch current latest version from DockerHub by finding which semver tag shares latest's digest
-          LATEST_DIGEST=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/latest" | \
+          LATEST_DIGEST=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/latest" | \
             jq -r '.images[0].digest // empty')
 
-          if [[ -n "$LATEST_DIGEST" ]]; then
+          if [[ -n "$$LATEST_DIGEST" ]]; then
             # Find the v* tag that matches this digest
-            CURRENT_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
-              jq -r --arg digest "$LATEST_DIGEST" \
-              '.results[] | select(.images[].digest == $digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))' | \
+            CURRENT_VERSION=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
+              jq -r --arg digest "$$LATEST_DIGEST" \
+              '.results[] | select(.images[].digest == $$digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))' | \
               sed 's/^v//' | head -1)
           fi
-          CURRENT_VERSION="${CURRENT_VERSION:-0.0.0}"
-          echo "Current latest version: $CURRENT_VERSION, New version: $NEW_VERSION"
+          CURRENT_VERSION="$${CURRENT_VERSION:-0.0.0}"
+          echo "Current latest version: $$CURRENT_VERSION, New version: $$NEW_VERSION"
 
-          # Compare versions (semver): returns 0 if $1 >= $2
+          # Compare versions (semver): returns 0 if $$1 >= $$2
           version_gte() {
-            [ "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+            [ "$$(printf '%s\n' "$$1" "$$2" | sort -V | tail -n1)" = "$$1" ]
           }
 
-          if version_gte "$NEW_VERSION" "$CURRENT_VERSION"; then
-            echo "New version $NEW_VERSION >= current $CURRENT_VERSION, tagging as latest"
-            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:${NEW_VERSION}"
+          if version_gte "$$NEW_VERSION" "$$CURRENT_VERSION"; then
+            echo "New version $$NEW_VERSION >= current $$CURRENT_VERSION, tagging as latest"
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:$$NEW_VERSION"
           else
-            echo "New version $NEW_VERSION < current $CURRENT_VERSION, skipping latest tag"
-            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:${NEW_VERSION}"
+            echo "New version $$NEW_VERSION < current $$CURRENT_VERSION, skipping latest tag"
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:$$NEW_VERSION"
           fi
         else
           echo "Main branch build: SHA ${SHORT_SHA}"
@@ -154,4 +185,4 @@ options:
   diskSizeGb: 100
   logging: CLOUD_LOGGING_ONLY
 
-timeout: '4200s'
+timeout: '7200s'  # 2 hours - multiplatform builds take ~90min
