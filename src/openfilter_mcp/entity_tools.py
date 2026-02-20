@@ -13,6 +13,8 @@ Cross-tenant support: Plainsight employees (@plainsight.ai) can pass an optional
 parameter to access resources in other organizations.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re
