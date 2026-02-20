@@ -629,6 +629,12 @@ class TestEntitySearch:
         assert "project" in names
         assert "model" in names
 
+    def test_search_malformed_query(self, registry):
+        """Malformed tantivy query syntax returns empty list, not an exception."""
+        for bad_query in ["NOT", 'field:', '"unclosed', "AND OR"]:
+            results = registry.list_entity_summaries(bad_query)
+            assert results == [], f"Expected [] for malformed query {bad_query!r}"
+
 
 class TestGetEntityTypeInfo:
     """Tests for get_entity_info_for."""

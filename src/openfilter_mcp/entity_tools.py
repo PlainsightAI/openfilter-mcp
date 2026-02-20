@@ -425,7 +425,10 @@ class EntityRegistry:
             ]
 
         searcher = self._search_index.searcher()
-        parsed_query = self._search_index.parse_query(query, ["corpus"])
+        try:
+            parsed_query = self._search_index.parse_query(query, ["corpus"])
+        except ValueError:
+            return []
         search_results = searcher.search(parsed_query, limit=len(self.entities))
 
         snippet_generator = tantivy.SnippetGenerator.create(
