@@ -25,7 +25,7 @@ COPY code-context/ code-context/
 # Use CPU-only pre-built wheels from the llama-cpp-python-cpu index
 # Falls back to building from source with CMAKE_ARGS if wheel not available
 ENV CMAKE_ARGS="-DGGML_CUDA=off"
-RUN uv sync --locked --index llama-cpp-python-cpu || uv sync --index llama-cpp-python-cpu
+RUN uv sync --locked --extra code-search --index llama-cpp-python-cpu || uv sync --extra code-search --index llama-cpp-python-cpu
 RUN uv run index
 
 FROM python:3.12-slim AS server
@@ -58,6 +58,6 @@ COPY --from=indexer /app/openfilter_repos_clones/ openfilter_repos_clones/
 # Install dependencies (CPU-only for serving)
 # Use CPU-only pre-built wheels from the llama-cpp-python-cpu index
 ENV CMAKE_ARGS="-DGGML_CUDA=off"
-RUN uv sync --locked --index llama-cpp-python-cpu || uv sync --index llama-cpp-python-cpu
+RUN uv sync --locked --extra code-search --index llama-cpp-python-cpu || uv sync --extra code-search --index llama-cpp-python-cpu
 
 CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
