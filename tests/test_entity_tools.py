@@ -493,6 +493,141 @@ class TestSchemaValidation:
         assert errors == []
 
 
+class TestExtractEntityName:
+    """Tests for _extract_entity_name with real production operation IDs.
+
+    These test cases come from https://api.prod.plainsight.tech/openapi.json
+    and verify that multi-word entity names, compound suffixes, action-first
+    vs entity-first patterns, and singularization are all handled correctly.
+    """
+
+    @pytest.fixture
+    def registry(self):
+        """Create a registry with minimal spec (we only test the extraction method)."""
+        return EntityRegistry({"openapi": "3.0.0", "info": {"title": "t", "version": "1"}, "paths": {}})
+
+    @pytest.mark.parametrize(
+        "operation_id, path, expected_entity",
+        [
+            # === Ticket bug cases ===
+            ("pipeline-version-get-by-name", "/filter-pipelines/{pipeline_id}/versions/name/{version_name}", "pipeline_version"),
+            ("pipeline-version-get-by-number", "/filter-pipelines/{pipeline_id}/versions/{version_number}", "pipeline_version"),
+            ("agent-webhook-status", "/agents/pipeline-instance/status", "status"),
+            ("test-run-list", "/tests/{test_id}/runs", "test_run"),
+            ("test-run-get", "/test-runs/{test_run_id}", "test_run"),
+            ("pipeline-comparison-report-html", "/pipeline-comparisons/{comparison_id}/report/html", "html"),
+            # === Simple entity-action (entity-first) ===
+            ("project-list", "/projects", "project"),
+            ("project-get", "/projects/{id}", "project"),
+            ("project-create", "/projects", "project"),
+            ("project-update", "/projects/{id}", "project"),
+            ("project-delete", "/projects/{id}", "project"),
+            ("agent-list", "/agents", "agent"),
+            ("agent-get", "/agents/{id}", "agent"),
+            ("organization-list", "/organizations", "organization"),
+            ("user-invite", "/users/invite", "user"),
+            ("training-cancel", "/trainings/{id}/cancel", "training"),
+            # === Multi-word entity names (entity-first) ===
+            ("api-token-list", "/api-tokens", "api_token"),
+            ("api-token-create", "/api-tokens", "api_token"),
+            ("filter-pipeline-get", "/filter-pipelines/{id_or_name}", "filter_pipeline"),
+            ("filter-parameter-update", "/filter-parameters/{id}", "filter_parameter"),
+            ("pipeline-instance-start", "/pipeline-instances/{id}/start", "pipeline_instance"),
+            ("pipeline-instance-stop", "/pipeline-instances/{id}/stop", "pipeline_instance"),
+            ("pipeline-version-create", "/filter-pipelines/{pipeline_id}/versions", "pipeline_version"),
+            ("pipeline-version-restore", "/filter-pipelines/{pipeline_id}/versions/{version_number}/restore", "pipeline_version"),
+            ("source-config-list", "/source-configs", "source_config"),
+            ("filter-registry-access-key-delete", "/filter-registry/access-keys/{key_id}", "filter_registry_access_key"),
+            ("synthetic-video-job-get", "/projects/{project_id}/synthetic-videos/{id}", "synthetic_video_job"),
+            ("golden-truth-file-get", "/golden-truth-files/{id}", "golden_truth_file"),
+            # === Action-first format ===
+            ("list-filters", "/filters", "filter"),
+            ("create-filter", "/filters", "filter"),
+            ("delete-filter-image", "/filter-images/{id}", "filter_image"),
+            ("get-filter-subscription", "/filter-subscriptions/{id}", "filter_subscription"),
+            ("list-filter-subscriptions", "/filter-subscriptions", "filter_subscription"),
+            ("create-filter-subscription", "/filter-subscriptions", "filter_subscription"),
+            ("update-filter-subscription", "/filter-subscriptions/{id}", "filter_subscription"),
+            ("delete-model", "/models/{id}", "model"),
+            ("get-filter-readme", "/filters/{id}/readme", "filter_readme"),
+            ("get-model-training-run-purchase", "/model-training-run-purchases/{id}", "model_training_run_purchase"),
+            ("list-model-training-run-purchases", "/model-training-run-purchases", "model_training_run_purchase"),
+            ("create-model-training-run-purchase", "/model-training-run-purchases", "model_training_run_purchase"),
+            ("delete-model-training-run-purchase", "/model-training-run-purchases/{id}", "model_training_run_purchase"),
+            ("initiate-model-training-run-purchase", "/model-training-run-purchases/initiate", "model_training_run_purchase"),
+            ("sync-model-training-run-purchase", "/model-training-run-purchases/sync", "model_training_run_purchase"),
+            ("list-public-filters", "/public/filters", "public_filter"),
+            # === Pluralization: products-list should singularize ===
+            ("products-list", "/products", "product"),
+            # === Deployment actions ===
+            ("deployment-start", "/deployments", "deployment"),
+            ("deployment-update-status", "/deployments/{pipeline_instance_id}/status", "deployment"),
+            # === Sub-entity operations (entity_action_subentity -> entity) ===
+            ("organization-get-subscription", "/organizations/{id}/subscription", "organization"),
+            ("organization-create-secret", "/organizations/{id}/secrets", "organization"),
+            ("organization-delete-secret", "/organizations/{id}/secrets/{subject}", "organization"),
+            ("project-list-by-organization", "/organizations/{organization_id}/projects", "project"),
+        ],
+    )
+    def test_extract_entity_name(self, registry, operation_id, path, expected_entity):
+        result = registry._extract_entity_name(path, operation_id)
+        assert result == expected_entity, (
+            f"_extract_entity_name({path!r}, {operation_id!r}) = {result!r}, expected {expected_entity!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "operation_id, path, method, expected_action",
+        [
+            # Entity-first: last action verb
+            ("test-run-list", "/tests/{test_id}/runs", "get", "list"),
+            ("test-run-get", "/test-runs/{test_run_id}", "get", "get"),
+            ("pipeline-version-get-by-name", "/filter-pipelines/{p}/versions/name/{v}", "get", "get"),
+            ("pipeline-instance-start", "/pipeline-instances/{id}/start", "post", "start"),
+            ("pipeline-instance-stop", "/pipeline-instances/{id}/stop", "post", "stop"),
+            ("training-cancel", "/trainings/{id}/cancel", "post", "cancel"),
+            ("pipeline-version-restore", "/filter-pipelines/{p}/versions/{v}/restore", "post", "restore"),
+            # Action-first: first part is the action
+            ("list-filters", "/filters", "get", "list"),
+            ("create-filter", "/filters", "post", "create"),
+            ("delete-model", "/models/{id}", "delete", "delete"),
+            ("get-filter-subscription", "/filter-subscriptions/{id}", "get", "get"),
+            ("initiate-model-training-run-purchase", "/mtrp/initiate", "post", "initiate"),
+            ("sync-model-training-run-purchase", "/mtrp/sync", "post", "sync"),
+            # Fallback to HTTP method when no action verb found
+            ("agent-webhook-status", "/agents/pipeline-instance/status", "post", "create"),
+            ("pipeline-comparison-report-html", "/pc/{id}/report/html", "get", "list"),
+        ],
+    )
+    def test_classify_operation(self, registry, operation_id, path, method, expected_action):
+        result = registry._classify_operation(method, path, operation_id)
+        assert result == expected_action, (
+            f"_classify_operation({method!r}, {path!r}, {operation_id!r}) = {result!r}, expected {expected_action!r}"
+        )
+
+
+class TestSingularize:
+    """Tests for _singularize / _singularize_word."""
+
+    @pytest.mark.parametrize(
+        "word, expected",
+        [
+            ("projects", "project"),
+            ("filters", "filter"),
+            ("purchases", "purchase"),
+            ("entries", "entry"),
+            ("status", "status"),
+            ("k8s", "k8s"),
+            ("address", "address"),
+            # Compound names: only last segment singularized
+            ("model_training_run_purchases", "model_training_run_purchase"),
+            ("filter_subscriptions", "filter_subscription"),
+            ("public_filters", "public_filter"),
+        ],
+    )
+    def test_singularize(self, word, expected):
+        assert EntityRegistry._singularize(word) == expected
+
+
 class TestPathBuilding:
     """Tests for URL path building."""
 

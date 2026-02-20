@@ -111,63 +111,99 @@ class EntityRegistry:
     # Standard CRUD actions - used to parse operation IDs
     CRUD_ACTIONS = {"list", "get", "create", "update", "delete"}
     # Common custom actions found in REST APIs
-    CUSTOM_ACTIONS = {"start", "stop", "cancel", "download", "upload", "validate", "run", "execute"}
+    # Note: 'run' is excluded because it appears as a noun in entity names
+    # (e.g., 'test-run', 'model-training-run') far more often than as a verb.
+    CUSTOM_ACTIONS = {
+        "start", "stop", "cancel", "download", "upload", "validate",
+        "execute", "export", "check", "apply", "sync", "initiate",
+        "invite", "ingest", "restore", "generate",
+    }
     ALL_ACTIONS = CRUD_ACTIONS | CUSTOM_ACTIONS
+
+    # Words that should never be singularized (end in 's' but are not plural)
+    _NO_SINGULARIZE = {"status", "k8s"}
 
     def _extract_entity_name(self, path: str, operation_id: str) -> str | None:
         """Extract entity name from path or operation_id.
 
-        This is dynamically driven - it looks for patterns like:
-            entity-action (e.g., project-list, training-cancel)
-            parent-action-entity (e.g., organization-get-subscription)
+        Two patterns are recognized in operation IDs:
 
-        Falls back to path-based extraction if operation_id doesn't match patterns.
+        1. **Action-first**: ``list-projects``, ``create-filter-subscription``
+           → first part is an action verb, the rest is the entity.
+        2. **Entity-first**: ``project-list``, ``test-run-get``,
+           ``pipeline-version-get-by-name``
+           → the *last* action verb separates entity (before) from modifiers
+           (after).
+
+        Falls back to path-based extraction if operation_id doesn't match.
         """
-        # Try to extract from operation_id first (more reliable)
         if operation_id:
-            # Normalize: convert dashes to underscores for matching
             op_normalized = operation_id.replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find the action verb position
-            action_idx = None
-            for i, part in enumerate(parts):
-                if part in self.ALL_ACTIONS:
-                    action_idx = i
-                    break
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first: e.g., list_filter_subscriptions,
+                # create_model_training_run_purchase, get_filter_readme
+                entity_parts = parts[1:]
+                if entity_parts:
+                    return self._singularize("_".join(entity_parts))
+            else:
+                # Entity-first: find the *last* action verb; everything
+                # before it is the entity name.
+                action_idx = None
+                for i in range(len(parts) - 1, -1, -1):
+                    if parts[i] in self.ALL_ACTIONS:
+                        action_idx = i
+                        break
 
-            if action_idx is not None:
-                # If there's content after the action, that's the entity (compound case)
-                # e.g., organization_get_subscription -> subscription
-                if action_idx < len(parts) - 1:
-                    return "_".join(parts[action_idx + 1 :])
-                # Otherwise, content before the action is the entity
-                # e.g., project_list -> project
-                elif action_idx > 0:
-                    return "_".join(parts[:action_idx])
+                if action_idx is not None and action_idx > 0:
+                    entity = "_".join(parts[:action_idx])
+                    return self._singularize(entity)
 
         # Fall back to path-based extraction
-        # Remove path parameters and split
         clean_path = re.sub(r"\{[^}]+\}", "", path)
         path_parts = [p for p in clean_path.split("/") if p]
 
         if path_parts:
-            # Take the last meaningful segment (the actual entity, not parent)
-            # For paths like /projects/{project_id}/videos, we want "video" not "project"
             entity = path_parts[-1]
-            # Singularize if plural
-            if entity.endswith("ies"):
-                entity = entity[:-3] + "y"
-            elif entity.endswith("s") and not entity.endswith("ss"):
-                entity = entity[:-1]
+            entity = self._singularize(entity)
             return entity.replace("-", "_")
 
         return None
 
+    @classmethod
+    def _singularize(cls, word: str) -> str:
+        """Naive singularization of the last component in a compound name.
+
+        For compound names like ``model_training_run_purchases``, only the
+        last segment (``purchases``) is singularized.
+        """
+        # For compound names, only singularize the last segment
+        if "_" in word:
+            parts = word.split("_")
+            parts[-1] = cls._singularize_word(parts[-1])
+            return "_".join(parts)
+        return cls._singularize_word(word)
+
+    @classmethod
+    def _singularize_word(cls, word: str) -> str:
+        """Singularize a single word, with exceptions for words ending in 's'
+        that are not actually plural."""
+        if word.lower() in cls._NO_SINGULARIZE:
+            return word
+        if word.endswith("ies") and len(word) > 3:
+            return word[:-3] + "y"
+        if word.endswith("sses"):
+            return word[:-2]  # addresses -> addresse? Actually rare in APIs, skip
+        if word.endswith("s") and not word.endswith("ss"):
+            return word[:-1]
+        return word
+
     def _classify_operation(self, method: str, path: str, operation_id: str) -> str | None:
         """Classify operation type from operation_id or HTTP method.
 
-        Dynamically extracts action from operation_id by finding known action verbs.
+        Uses the same action-first / entity-first strategy as _extract_entity_name:
+        if the first part is an action, use it; otherwise use the last action verb.
         Falls back to HTTP method heuristics.
         """
         method = method.upper()
@@ -177,8 +213,12 @@ class EntityRegistry:
             op_normalized = operation_id.lower().replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find any known action in the operation_id
-            for part in parts:
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first format: list_filters, create_filter_subscription
+                return parts[0]
+
+            # Entity-first format: find the last action verb
+            for part in reversed(parts):
                 if part in self.ALL_ACTIONS:
                     return part
 
