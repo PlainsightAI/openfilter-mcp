@@ -1,9 +1,25 @@
 """Tests for OpenAPI-generated MCP server integration."""
 
+import asyncio
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _get_tool_names(mcp):
+    """Get tool names from a FastMCP server (compatible with v2 and v3)."""
+    return [tool.name for tool in asyncio.run(mcp.list_tools())]
+
+
+def _code_context_available():
+    """Check if code-context optional dependency is installed."""
+    try:
+        import code_context  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 class TestOpenAPISpecLoading:
@@ -97,7 +113,7 @@ class TestMCPServerCreation:
     """Tests for MCP server creation from OpenAPI spec."""
 
     def test_create_mcp_server_without_token_still_works(self):
-        """Should create MCP server with only code search tools when no token available."""
+        """Should create MCP server without token (no OpenAPI tools, no polling)."""
         with patch("openfilter_mcp.server.get_auth_token", return_value=None):
             with patch(
                 "openfilter_mcp.server.get_latest_index_name",
@@ -108,14 +124,14 @@ class TestMCPServerCreation:
                 # This should NOT raise an exception
                 mcp = create_mcp_server()
 
-        # Verify code search tools were registered
-        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+        tool_names = _get_tool_names(mcp)
 
-        # Manually defined code search tools should still be available
-        assert "search" in tool_names
-        assert "search_code" in tool_names
-        assert "get_chunk" in tool_names
-        assert "read_file" in tool_names
+        # Code search tools are only available when code-context is installed
+        if _code_context_available():
+            assert "search" in tool_names
+            assert "search_code" in tool_names
+            assert "get_chunk" in tool_names
+            assert "read_file" in tool_names
 
         # OpenAPI tools should NOT be available (no auth)
         assert "list_projects" not in tool_names
@@ -123,8 +139,8 @@ class TestMCPServerCreation:
         # Polling tool should NOT be available (requires auth)
         assert "poll_until_change" not in tool_names
 
-    def test_create_mcp_server_registers_openapi_tools(self):
-        """Should create MCP server with tools from OpenAPI spec."""
+    def test_create_mcp_server_registers_entity_tools(self):
+        """Should create MCP server with entity CRUD tools from OpenAPI spec."""
         mock_spec = {
             "openapi": "3.1.0",
             "info": {"title": "Test API", "version": "1.0.0"},
@@ -169,23 +185,22 @@ class TestMCPServerCreation:
 
                         mcp = create_mcp_server()
 
-        # Verify tools were registered (from both OpenAPI and manual definitions)
-        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
+        # Verify entity CRUD tools were registered
+        tool_names = _get_tool_names(mcp)
 
-        # OpenAPI-generated tools
-        assert "list_projects" in tool_names
-        assert "get_project" in tool_names
-
-        # Manually defined code search tools
-        assert "search" in tool_names
-        assert "search_code" in tool_names
-        assert "get_chunk" in tool_names
-        assert "read_file" in tool_names
+        # Entity tools registered by register_entity_tools
+        assert "list_entity_types" in tool_names
+        assert "get_entity" in tool_names
+        assert "list_entities" in tool_names
 
 
 class TestCodeSearchTools:
     """Tests for manually-defined code search tools."""
 
+    @pytest.mark.skipif(
+        not _code_context_available(),
+        reason="code-context not installed",
+    )
     def test_search_tool_uses_correct_index(self):
         """Should use the latest index name for search."""
         mock_spec = {
@@ -214,15 +229,8 @@ class TestCodeSearchTools:
 
                             mcp = create_mcp_server()
 
-                            # Find and call the search tool
-                            search_tool = None
-                            for tool in mcp._tool_manager._tools.values():
-                                if tool.name == "search":
-                                    search_tool = tool
-                                    break
-
-                            assert search_tool is not None
-                            # The tool function would use my-test-index-v2
+                            tool_names = _get_tool_names(mcp)
+                            assert "search" in tool_names
 
     def test_read_file_prevents_path_traversal(self):
         """Should prevent path traversal attacks."""
@@ -378,163 +386,112 @@ class TestAuthEndpointFiltering:
     """Tests for auth endpoint filtering from OpenAPI tools."""
 
     def test_auth_endpoints_are_excluded(self):
-        """Auth endpoints should not be exposed as MCP tools."""
-        mock_spec = {
-            "openapi": "3.1.0",
-            "info": {"title": "Test API", "version": "1.0.0"},
-            "paths": {
-                "/auth/login": {
-                    "post": {
-                        "operationId": "auth_login",
-                        "summary": "Login",
-                        "responses": {"200": {"description": "Success"}},
-                    }
+        """Auth endpoints should be excluded from entity registry."""
+        from openfilter_mcp.entity_tools import EntityRegistry
+
+        registry = EntityRegistry(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "Test API", "version": "1.0.0"},
+                "paths": {
+                    "/auth/login": {
+                        "post": {
+                            "operationId": "auth_login",
+                            "summary": "Login",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
+                    "/auth/token/refresh": {
+                        "post": {
+                            "operationId": "auth_token_refresh",
+                            "summary": "Refresh token",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
+                    "/projects": {
+                        "get": {
+                            "operationId": "list_projects",
+                            "summary": "List all projects",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
                 },
-                "/auth/token/refresh": {
-                    "post": {
-                        "operationId": "auth_token_refresh",
-                        "summary": "Refresh token",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-                "/projects": {
-                    "get": {
-                        "operationId": "list_projects",
-                        "summary": "List all projects",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-            },
-        }
+            }
+        )
 
-        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
-            with patch(
-                "openfilter_mcp.server.get_auth_token", return_value="test-token"
-            ):
-                with patch(
-                    "openfilter_mcp.server.get_effective_org_id", return_value=None
-                ):
-                    with patch(
-                        "openfilter_mcp.server.get_latest_index_name",
-                        return_value="test-index",
-                    ):
-                        from openfilter_mcp.server import create_mcp_server
-
-                        mcp = create_mcp_server()
-
-        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
-
-        # Auth endpoints should NOT be exposed as tools
-        assert "auth_login" not in tool_names
-        assert "auth_token_refresh" not in tool_names
-
-        # Non-auth endpoints should still be exposed
-        assert "list_projects" in tool_names
+        entity_names = list(registry.entities.keys())
+        assert any("project" in name for name in entity_names)
+        # Auth paths should not produce entities
+        for name in entity_names:
+            assert "auth" not in name.lower()
 
     def test_accounts_endpoints_are_excluded(self):
-        """Account management endpoints should not be exposed as MCP tools."""
-        mock_spec = {
-            "openapi": "3.1.0",
-            "info": {"title": "Test API", "version": "1.0.0"},
-            "paths": {
-                "/accounts/create": {
-                    "post": {
-                        "operationId": "account_create",
-                        "summary": "Create account",
-                        "responses": {"200": {"description": "Success"}},
-                    }
+        """Account management endpoints should be excluded from entity registry."""
+        from openfilter_mcp.entity_tools import EntityRegistry
+
+        registry = EntityRegistry(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "Test API", "version": "1.0.0"},
+                "paths": {
+                    "/accounts/create": {
+                        "post": {
+                            "operationId": "account_create",
+                            "summary": "Create account",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
+                    "/organizations": {
+                        "get": {
+                            "operationId": "list_organizations",
+                            "summary": "List organizations",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
                 },
-                "/accounts/check-email": {
-                    "get": {
-                        "operationId": "account_check_email",
-                        "summary": "Check if email is available",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-                "/organizations": {
-                    "get": {
-                        "operationId": "list_organizations",
-                        "summary": "List organizations",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-            },
-        }
+            }
+        )
 
-        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
-            with patch(
-                "openfilter_mcp.server.get_auth_token", return_value="test-token"
-            ):
-                with patch(
-                    "openfilter_mcp.server.get_effective_org_id", return_value=None
-                ):
-                    with patch(
-                        "openfilter_mcp.server.get_latest_index_name",
-                        return_value="test-index",
-                    ):
-                        from openfilter_mcp.server import create_mcp_server
-
-                        mcp = create_mcp_server()
-
-        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
-
-        # Account endpoints should NOT be exposed as tools
-        assert "account_create" not in tool_names
-        assert "account_check_email" not in tool_names
-
-        # Non-account endpoints should still be exposed
-        assert "list_organizations" in tool_names
+        entity_names = list(registry.entities.keys())
+        assert any("organization" in name for name in entity_names)
+        for name in entity_names:
+            assert "account" not in name.lower()
 
     def test_internal_endpoints_are_excluded(self):
-        """Internal endpoints should not be exposed as MCP tools."""
-        mock_spec = {
-            "openapi": "3.1.0",
-            "info": {"title": "Test API", "version": "1.0.0"},
-            "paths": {
-                "/internal/health": {
-                    "get": {
-                        "operationId": "internal_health",
-                        "summary": "Health check",
-                        "responses": {"200": {"description": "Success"}},
-                    }
+        """Internal endpoints should be excluded from entity registry."""
+        from openfilter_mcp.entity_tools import EntityRegistry
+
+        registry = EntityRegistry(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "Test API", "version": "1.0.0"},
+                "paths": {
+                    "/internal/health": {
+                        "get": {
+                            "operationId": "internal_health",
+                            "summary": "Health check",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
+                    "/internal/metrics": {
+                        "get": {
+                            "operationId": "internal_metrics",
+                            "summary": "Metrics",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
+                    "/users": {
+                        "get": {
+                            "operationId": "list_users",
+                            "summary": "List users",
+                            "responses": {"200": {"description": "Success"}},
+                        }
+                    },
                 },
-                "/internal/metrics": {
-                    "get": {
-                        "operationId": "internal_metrics",
-                        "summary": "Metrics",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-                "/users": {
-                    "get": {
-                        "operationId": "list_users",
-                        "summary": "List users",
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                },
-            },
-        }
+            }
+        )
 
-        with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
-            with patch(
-                "openfilter_mcp.server.get_auth_token", return_value="test-token"
-            ):
-                with patch(
-                    "openfilter_mcp.server.get_effective_org_id", return_value=None
-                ):
-                    with patch(
-                        "openfilter_mcp.server.get_latest_index_name",
-                        return_value="test-index",
-                    ):
-                        from openfilter_mcp.server import create_mcp_server
-
-                        mcp = create_mcp_server()
-
-        tool_names = [tool.name for tool in mcp._tool_manager._tools.values()]
-
-        # Internal endpoints should NOT be exposed as tools
-        assert "internal_health" not in tool_names
-        assert "internal_metrics" not in tool_names
-
-        # Non-internal endpoints should still be exposed
-        assert "list_users" in tool_names
+        entity_names = list(registry.entities.keys())
+        assert any("user" in name for name in entity_names)
+        for name in entity_names:
+            assert "internal" not in name.lower()
