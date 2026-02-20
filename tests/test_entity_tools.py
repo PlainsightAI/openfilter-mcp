@@ -540,3 +540,134 @@ class TestPathBuilding:
             {},
         )
         assert missing == ["project_id", "model_id"]
+
+
+class TestEntitySearch:
+    """Tests for entity search via list_entity_summaries."""
+
+    @pytest.fixture
+    def registry(self):
+        return EntityRegistry(SAMPLE_OPENAPI_SPEC)
+
+    def test_list_all_no_query(self, registry):
+        """No-query call returns all entities with highlights=None."""
+        results = registry.list_entity_summaries()
+        all_entities = registry.list_entities()
+        assert len(results) == len(all_entities)
+        for entry in results:
+            assert "name" in entry
+            assert "description" in entry
+            assert "highlights" in entry
+            assert entry["highlights"] is None
+
+    def test_summary_shape(self, registry):
+        """Each entry has exactly {name, description, highlights}."""
+        results = registry.list_entity_summaries()
+        for entry in results:
+            assert set(entry.keys()) == {"name", "description", "highlights"}
+
+    def test_all_results_sorted_by_name(self, registry):
+        """No-query results are sorted alphabetically by name."""
+        results = registry.list_entity_summaries()
+        names = [r["name"] for r in results]
+        assert names == sorted(names)
+
+    def test_search_by_entity_name(self, registry):
+        """Searching 'project' returns results including project."""
+        results = registry.list_entity_summaries("project")
+        assert len(results) > 0
+        names = [r["name"] for r in results]
+        assert "project" in names
+
+    def test_search_case_insensitive(self, registry):
+        """Searching 'PROJECT' (uppercase) still finds project."""
+        results = registry.list_entity_summaries("PROJECT")
+        names = [r["name"] for r in results]
+        assert "project" in names
+
+    def test_search_stemming(self, registry):
+        """Searching 'projects' (plural) finds 'project' via stemming."""
+        results = registry.list_entity_summaries("projects")
+        names = [r["name"] for r in results]
+        assert "project" in names
+
+    def test_search_by_operation_summary(self, registry):
+        """Searching 'cancel' finds training (has 'Cancel training' summary)."""
+        results = registry.list_entity_summaries("cancel")
+        names = [r["name"] for r in results]
+        assert "training" in names
+
+    def test_search_by_path(self, registry):
+        """Searching 'trainings' finds training (path is /trainings/{id}/cancel)."""
+        results = registry.list_entity_summaries("trainings")
+        names = [r["name"] for r in results]
+        assert "training" in names
+
+    def test_search_by_path_param(self, registry):
+        """Searching 'project_id' finds model (model ops have project_id param)."""
+        results = registry.list_entity_summaries("project_id")
+        names = [r["name"] for r in results]
+        assert "model" in names
+
+    def test_search_no_match(self, registry):
+        """Searching gibberish returns empty list."""
+        results = registry.list_entity_summaries("zzznomatchxyz")
+        assert results == []
+
+    def test_search_results_have_highlights(self, registry):
+        """When query matches, each result has a non-None highlights string."""
+        results = registry.list_entity_summaries("project")
+        assert len(results) > 0
+        for entry in results:
+            assert entry["highlights"] is not None
+            assert isinstance(entry["highlights"], str)
+
+    def test_search_multi_word(self, registry):
+        """Multi-word query 'project model' returns both project and model."""
+        results = registry.list_entity_summaries("project model")
+        names = [r["name"] for r in results]
+        assert "project" in names
+        assert "model" in names
+
+
+class TestGetEntityTypeInfo:
+    """Tests for get_entity_info_for."""
+
+    @pytest.fixture
+    def registry(self):
+        return EntityRegistry(SAMPLE_OPENAPI_SPEC)
+
+    def test_single_entity(self, registry):
+        """Single entity returns matching full metadata."""
+        result = registry.get_entity_info_for(["project"])
+        assert "project" in result
+        expected = registry.get_entity_info()["project"]
+        assert result["project"] == expected
+
+    def test_multiple_entities(self, registry):
+        """Multiple entities each return matching full metadata."""
+        result = registry.get_entity_info_for(["project", "organization"])
+        full_info = registry.get_entity_info()
+        assert result["project"] == full_info["project"]
+        assert result["organization"] == full_info["organization"]
+
+    def test_unknown_entity(self, registry):
+        """Unknown entity returns error with available_entities."""
+        result = registry.get_entity_info_for(["nonexistent"])
+        entry = result["nonexistent"]
+        assert "error" in entry
+        assert "Unknown entity type" in entry["error"]
+        assert "available_entities" in entry
+        assert isinstance(entry["available_entities"], list)
+
+    def test_mix_valid_and_unknown(self, registry):
+        """Mix of valid and unknown returns metadata and error respectively."""
+        result = registry.get_entity_info_for(["project", "nonexistent"])
+        expected = registry.get_entity_info()["project"]
+        assert result["project"] == expected
+        assert "error" in result["nonexistent"]
+
+    def test_empty_list(self, registry):
+        """Empty list returns empty dict."""
+        result = registry.get_entity_info_for([])
+        assert result == {}
