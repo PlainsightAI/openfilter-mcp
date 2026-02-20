@@ -4,7 +4,11 @@ import os
 import time
 import git
 import shutil
-from code_context.indexing import index_repository_direct
+
+try:
+    from code_context.indexing import index_repository_direct
+except ImportError:
+    index_repository_direct = None
 
 MONOREPO_CLONE_DIR = "openfilter_repos_clones"
 
@@ -75,6 +79,9 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
             print(f"Error cloning {repo_url}: {e}")
 
     if cloned_repos_count > 0:
+        if index_repository_direct is None:
+            print("Error: code-context is not installed. Install with: uv sync --extra code-search")
+            return
         print(f"All repositories cloned. Now indexing the monorepo: {MONOREPO_CLONE_DIR}")
         try:
             index_name = index_repository_direct(

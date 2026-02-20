@@ -23,9 +23,6 @@ import os
 from typing import Any, Dict
 
 import httpx
-
-from code_context.indexing import INDEXES_DIR
-from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
 
 from openfilter_mcp.auth import (
@@ -39,6 +36,16 @@ from openfilter_mcp.auth import (
 )
 from openfilter_mcp.entity_tools import register_entity_tools
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
+
+# code-context is an optional dependency (install with `uv sync --extra code-search`)
+try:
+    from code_context.indexing import INDEXES_DIR
+    from code_context.main import _get_chunk, _search_index
+
+    HAS_CODE_CONTEXT = True
+except ImportError:
+    INDEXES_DIR = "indexes"
+    HAS_CODE_CONTEXT = False
 
 
 # =============================================================================
@@ -299,9 +306,10 @@ def create_mcp_server() -> FastMCP:
     # =========================================================================
 
     # Check if code search is enabled (default: true)
+    # Requires the code-search extra: `uv sync --extra code-search`
     enable_code_search = os.getenv("ENABLE_CODE_SEARCH", "true").lower() == "true"
 
-    if enable_code_search:
+    if enable_code_search and HAS_CODE_CONTEXT:
         # Get the latest index name for code search tools
         latest_index_name = get_latest_index_name()
 

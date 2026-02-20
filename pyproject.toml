@@ -3,7 +3,6 @@ name = "openfilter-mcp"
 version = "0.1.0"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "code-context>=0.1.0",
     "fastmcp>=2.13.1",
     "gitpython>=3.1.45",
     "httpx>=0.28.1",
@@ -11,6 +10,9 @@ dependencies = [
     "jsonschema>=4.20.0",
     "platformdirs>=4.0.0",
 ]
+
+[project.optional-dependencies]
+code-search = ["code-context>=0.1.0"]
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]
