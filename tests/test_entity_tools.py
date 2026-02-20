@@ -1,7 +1,7 @@
 """Tests for entity-based API tools."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from openfilter_mcp.entity_tools import (
     EntityRegistry,
@@ -540,3 +540,228 @@ class TestPathBuilding:
             {},
         )
         assert missing == ["project_id", "model_id"]
+
+
+class TestScopedTokenHeaders:
+    """Tests for session-scoped token support in EntityToolsHandler."""
+
+    @pytest.fixture
+    def mock_client(self):
+        client = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def handler(self, mock_client):
+        registry = EntityRegistry(SAMPLE_OPENAPI_SPEC)
+        return EntityToolsHandler(mock_client, registry)
+
+    @pytest.fixture
+    def mock_ctx_with_token(self):
+        """Create a mock Context with a scoped token in session state."""
+        ctx = AsyncMock()
+        state = {
+            "scoped_api_token": "ps_scoped_test_token_123",
+            "scoped_api_token_meta": {
+                "id": "token-uuid-123",
+                "name": "test-token",
+                "scopes": ["project:read", "deployment:read"],
+                "expires_at": "2026-12-31T23:59:59+00:00",
+                "org_id": "org-uuid-456",
+            },
+        }
+        ctx.get_state = AsyncMock(side_effect=lambda key: state.get(key))
+        return ctx
+
+    @pytest.fixture
+    def mock_ctx_without_token(self):
+        """Create a mock Context with no scoped token."""
+        ctx = AsyncMock()
+        ctx.get_state = AsyncMock(return_value=None)
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_request_headers_with_scoped_token(self, handler, mock_ctx_with_token):
+        """When a scoped token is in session state, it should be used in headers."""
+        headers = await handler._get_request_headers(org_id=None, ctx=mock_ctx_with_token)
+
+        assert headers is not None
+        assert headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+        assert headers["X-Scope-OrgID"] == "org-uuid-456"
+
+    @pytest.mark.asyncio
+    async def test_request_headers_without_scoped_token(self, handler, mock_ctx_without_token):
+        """Without a scoped token, returns None (use client defaults)."""
+        headers = await handler._get_request_headers(org_id=None, ctx=mock_ctx_without_token)
+
+        assert headers is None
+
+    @pytest.mark.asyncio
+    async def test_request_headers_without_ctx(self, handler):
+        """Without a context at all, returns None (backward compat)."""
+        headers = await handler._get_request_headers(org_id=None, ctx=None)
+
+        assert headers is None
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_create(self, handler, mock_client, mock_ctx_with_token):
+        """Create operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "new-123", "name": "Test"}
+        mock_client.post.return_value = mock_response
+
+        await handler.create("project", {"name": "Test"}, ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.post.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_get(self, handler, mock_client, mock_ctx_with_token):
+        """Get operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "123", "name": "Test"}
+        mock_client.get.return_value = mock_response
+
+        await handler.get("project", "123", ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.get.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_list(self, handler, mock_client, mock_ctx_with_token):
+        """List operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [{"id": "1"}]
+        mock_client.get.return_value = mock_response
+
+        await handler.list("project", ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.get.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_explicit_org_id_overrides_scoped_meta(self, handler, mock_client, mock_ctx_with_token):
+        """Explicit org_id overrides the scoped token's org_id (for Plainsight employees)."""
+        with (
+            patch("openfilter_mcp.entity_tools.get_auth_token", return_value="original-jwt"),
+            patch("openfilter_mcp.entity_tools.is_plainsight_employee", return_value=True),
+        ):
+            headers = await handler._get_request_headers(
+                org_id="different-org-789", ctx=mock_ctx_with_token
+            )
+
+        assert headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+        assert headers["X-Scope-OrgID"] == "different-org-789"
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_denied_for_non_employee_with_scoped_token(
+        self, handler, mock_ctx_with_token
+    ):
+        """Non-employees can't override org_id even with a scoped token."""
+        with patch("openfilter_mcp.entity_tools.is_plainsight_employee", return_value=False):
+            headers = await handler._get_request_headers(
+                org_id="different-org-789", ctx=mock_ctx_with_token
+            )
+
+        # Should still have the scoped token but NOT the overridden org_id
+        assert headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+        assert headers["X-Scope-OrgID"] == "org-uuid-456"  # from token meta, not override
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_update(self, handler, mock_client, mock_ctx_with_token):
+        """Update operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "123", "name": "Updated"}
+        mock_response.raise_for_status = MagicMock()
+        mock_client.patch.return_value = mock_response
+
+        await handler.update("project", "123", {"name": "Updated"}, ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.patch.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_delete(self, handler, mock_client, mock_ctx_with_token):
+        """Delete operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.raise_for_status = MagicMock()
+        mock_client.delete.return_value = mock_response
+
+        await handler.delete("project", "123", ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.delete.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_used_in_entity_action(self, handler, mock_client, mock_ctx_with_token):
+        """Action operation uses scoped token when available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"status": "cancelled"}
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+
+        await handler.action("training", "cancel", id="train-123", ctx=mock_ctx_with_token)
+
+        call_headers = mock_client.post.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+
+    @pytest.mark.asyncio
+    async def test_scoped_meta_without_org_id(self, handler):
+        """When scoped_api_token_meta has no org_id, headers have Authorization but no X-Scope-OrgID."""
+        ctx = AsyncMock()
+        state = {
+            "scoped_api_token": "ps_scoped_no_org_token",
+            "scoped_api_token_meta": {
+                "id": "token-uuid-789",
+                "name": "no-org-token",
+                "scopes": ["project:read"],
+                "expires_at": "2026-12-31T23:59:59+00:00",
+                # Note: no "org_id" key
+            },
+        }
+        ctx.get_state = AsyncMock(side_effect=lambda key: state.get(key))
+
+        headers = await handler._get_request_headers(org_id=None, ctx=ctx)
+
+        assert headers is not None
+        assert headers["Authorization"] == "Bearer ps_scoped_no_org_token"
+        assert "X-Scope-OrgID" not in headers
+
+    @pytest.mark.asyncio
+    async def test_employee_check_uses_original_jwt_not_scoped_token(
+        self, handler, mock_ctx_with_token
+    ):
+        """Employee check uses get_auth_token() (original JWT), not the scoped ps_ token.
+
+        The is_plainsight_employee() function decodes JWT payload to check email domain,
+        which won't work on a ps_ API token. So we always check the original JWT.
+        """
+        with (
+            patch("openfilter_mcp.entity_tools.get_auth_token", return_value="original-jwt-token"),
+            patch("openfilter_mcp.entity_tools.is_plainsight_employee", return_value=True) as mock_employee,
+        ):
+            headers = await handler._get_request_headers(
+                org_id="cross-tenant-org-999", ctx=mock_ctx_with_token
+            )
+
+        # The scoped token should be used for Authorization
+        assert headers["Authorization"] == "Bearer ps_scoped_test_token_123"
+        # The explicit org_id should override the scoped token's org_id
+        assert headers["X-Scope-OrgID"] == "cross-tenant-org-999"
+        # is_plainsight_employee should have been called with the ORIGINAL JWT, not the scoped token
+        mock_employee.assert_called_once_with("original-jwt-token")
+
+    @pytest.mark.asyncio
+    async def test_ctx_get_state_exception_falls_back(self, handler):
+        """If ctx.get_state raises, falls back to no scoped token."""
+        ctx = AsyncMock()
+        ctx.get_state = AsyncMock(side_effect=RuntimeError("state unavailable"))
+
+        headers = await handler._get_request_headers(org_id=None, ctx=ctx)
+
+        assert headers is None

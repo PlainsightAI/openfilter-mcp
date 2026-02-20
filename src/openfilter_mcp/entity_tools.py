@@ -11,19 +11,26 @@ Schema validation is performed using JSON Schema validation from the OpenAPI spe
 
 Cross-tenant support: Plainsight employees (@plainsight.ai) can pass an optional `org_id`
 parameter to access resources in other organizations.
+
+Token scoping: When a scoped API token is active in the MCP session, all API requests
+use that token instead of the default server token.
 """
 
 import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 import jsonschema
 from jsonschema import ValidationError as JsonSchemaValidationError
 
-from openfilter_mcp.auth import get_auth_token, is_plainsight_employee
+from fastmcp.server.context import Context
+from fastmcp.server.elicitation import AcceptedElicitation
+
+from openfilter_mcp.auth import get_auth_token, is_plainsight_employee, read_psctl_token
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +395,90 @@ class EntityToolsHandler:
         self.client = client
         self.registry = registry
 
+    async def _recreate_expired_token(
+        self, scoped_meta: dict, ctx: Context
+    ) -> str | None:
+        """Attempt to re-create an expired scoped token with user re-approval.
+
+        Args:
+            scoped_meta: The metadata dict of the expired token (id, name, scopes, org_id, etc.).
+            ctx: FastMCP Context for elicitation and session state.
+
+        Returns:
+            The new plaintext token string if successfully re-created, or None on denial/failure.
+        """
+        token_name = scoped_meta.get("name", "unknown")
+        scopes = scoped_meta.get("scopes", [])
+        org_id = scoped_meta.get("org_id")
+
+        try:
+            await ctx.info(f"Scoped token '{token_name}' has expired. Requesting renewal...")
+
+            scope_lines = "\n".join(f"  - {s}" for s in scopes)
+            approval = await ctx.elicit(
+                f"Your scoped token '{token_name}' has expired.\n"
+                f"Re-create with same scopes?\n{scope_lines}",
+                ["Approve", "Deny"],
+            )
+
+            if not isinstance(approval, AcceptedElicitation) or approval.data != "Approve":
+                await ctx.info(f"Token renewal denied for '{token_name}'. Falling back to default token.")
+                return None
+
+            # Create new token with 1-hour TTL
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
+            post_headers = {}
+            if org_id:
+                post_headers["X-Scope-OrgID"] = org_id
+
+            response = await self.client.post(
+                "/api-tokens",
+                json={
+                    "name": token_name,
+                    "scopes": scopes,
+                    "expires_at": expires_at.isoformat(),
+                },
+                headers=post_headers if post_headers else None,
+            )
+
+            if response.status_code >= 400:
+                logger.warning(
+                    "Failed to re-create scoped token: API returned %d", response.status_code
+                )
+                await ctx.info(
+                    f"Failed to renew token '{token_name}' (API error {response.status_code}). "
+                    f"Falling back to default token."
+                )
+                return None
+
+            result = response.json()
+            new_token = result.get("token")
+            new_id = result.get("id")
+
+            if not new_token:
+                logger.warning("API did not return a token in the renewal response")
+                await ctx.info(f"Token renewal failed for '{token_name}': no token in API response.")
+                return None
+
+            # Update session state with the new token
+            new_meta = {
+                "id": new_id,
+                "name": token_name,
+                "scopes": scopes,
+                "expires_at": expires_at.isoformat(),
+                "org_id": org_id,
+            }
+            await ctx.set_state("scoped_api_token", new_token)
+            await ctx.set_state("scoped_api_token_meta", new_meta)
+
+            await ctx.info(f"Scoped token renewed successfully (new ID: {new_id}).")
+            return new_token
+
+        except Exception:
+            logger.exception("Error during scoped token renewal for '%s'", token_name)
+            return None
+
     def _validate_schema(self, data: dict, schema: dict | None, context: str) -> list[str]:
         """Validate data against JSON schema, returning list of errors."""
         if not schema:
@@ -433,34 +524,90 @@ class EntityToolsHandler:
             }
         return response.json()
 
-    def _get_headers_for_org(self, org_id: str | None) -> dict[str, str] | None:
-        """Get request headers for cross-tenant access.
+    async def _get_request_headers(self, org_id: str | None = None, ctx: Context | None = None) -> dict[str, str] | None:
+        """Build per-request headers, preferring a session-scoped token if available.
+
+        When a scoped token is active in the MCP session (via request_scoped_token),
+        it overrides the default server token for this request. The scoped token's
+        org_id is also used automatically.
 
         Args:
-            org_id: Target organization ID for cross-tenant access.
+            org_id: Optional cross-tenant org ID override.
+            ctx: FastMCP Context for accessing session state.
 
         Returns:
-            Headers dict with X-Scope-OrgID if cross-tenant access is allowed,
-            None otherwise (uses client's default headers).
+            Headers dict with Authorization and/or X-Scope-OrgID overrides,
+            or None to use the client's default headers.
         """
-        if not org_id:
-            return None
+        headers = {}
 
-        # Check if user is a Plainsight employee
-        token = get_auth_token()
-        if not token:
-            logger.warning("No auth token available for cross-tenant check")
-            return None
+        # Check for a session-scoped token
+        scoped_token = None
+        scoped_meta = None
+        if ctx:
+            try:
+                scoped_token = await ctx.get_state("scoped_api_token")
+                scoped_meta = await ctx.get_state("scoped_api_token_meta")
+            except Exception:
+                pass
 
-        if is_plainsight_employee(token):
-            logger.debug(f"Cross-tenant access: using org_id {org_id}")
-            return {"X-Scope-OrgID": org_id}
-        else:
-            logger.warning(
-                f"Cross-tenant access denied: user is not a Plainsight employee. "
-                f"Ignoring org_id={org_id}"
-            )
-            return None
+        # Check if scoped token has expired
+        if scoped_token and scoped_meta:
+            expires_at_str = scoped_meta.get("expires_at")
+            if expires_at_str:
+                try:
+                    expires_at = datetime.fromisoformat(expires_at_str)
+                    if expires_at < datetime.now(timezone.utc):
+                        logger.warning("Scoped token has expired")
+                        # Attempt automatic renewal with user re-approval
+                        if ctx:
+                            new_token = await self._recreate_expired_token(scoped_meta, ctx)
+                            if new_token:
+                                scoped_token = new_token
+                                # Refresh meta from session state after renewal
+                                try:
+                                    scoped_meta = await ctx.get_state("scoped_api_token_meta")
+                                except Exception:
+                                    pass
+                            else:
+                                # Renewal denied or failed — clear session state and fall back
+                                scoped_token = None
+                                scoped_meta = None
+                                try:
+                                    await ctx.set_state("scoped_api_token", None)
+                                    await ctx.set_state("scoped_api_token_meta", None)
+                                except Exception:
+                                    pass
+                        else:
+                            # No ctx available — silent fallback (backward compat)
+                            scoped_token = None
+                            scoped_meta = None
+                except (ValueError, TypeError):
+                    pass
+
+        if scoped_token:
+            headers["Authorization"] = f"Bearer {scoped_token}"
+            # Always set the scoped token's org_id as baseline
+            if scoped_meta:
+                scoped_org = scoped_meta.get("org_id")
+                if scoped_org:
+                    headers["X-Scope-OrgID"] = scoped_org
+
+        # Handle cross-tenant org_id override (replaces scoped org_id if employee)
+        if org_id:
+            # Prefer the psctl JWT for employee status check; it is always a real JWT.
+            # If OPENFILTER_TOKEN is a ps_ API token, is_plainsight_employee() cannot
+            # decode it as a JWT and would always return False.
+            jwt_token = read_psctl_token() or get_auth_token()
+            if jwt_token and is_plainsight_employee(jwt_token):
+                headers["X-Scope-OrgID"] = org_id
+            else:
+                logger.warning(
+                    f"Cross-tenant access denied: user is not a Plainsight employee. "
+                    f"Ignoring org_id={org_id}"
+                )
+
+        return headers if headers else None
 
     async def create(
         self,
@@ -468,6 +615,7 @@ class EntityToolsHandler:
         data: dict,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Create a new entity."""
         entity = self.registry.get_entity(entity_type)
@@ -503,8 +651,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
         response = await self.client.post(path, json=data, headers=headers)
         return self._handle_response(response)
 
@@ -514,6 +661,7 @@ class EntityToolsHandler:
         id: str,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Get an entity by ID."""
         entity = self.registry.get_entity(entity_type)
@@ -544,8 +692,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
         response = await self.client.get(path, headers=headers)
         return self._handle_response(response)
 
@@ -555,6 +702,7 @@ class EntityToolsHandler:
         filters: dict[str, Any] | None = None,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """List entities with optional filters."""
         entity = self.registry.get_entity(entity_type)
@@ -585,8 +733,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with query params and optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
         response = await self.client.get(path, params=filters or {}, headers=headers)
         if response.status_code >= 400:
             return self._handle_response(response)
@@ -605,6 +752,7 @@ class EntityToolsHandler:
         data: dict,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Update an entity."""
         entity = self.registry.get_entity(entity_type)
@@ -640,8 +788,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
 
         # Use PATCH or PUT based on operation
         if op.method == "PUT":
@@ -657,6 +804,7 @@ class EntityToolsHandler:
         id: str,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Delete an entity."""
         entity = self.registry.get_entity(entity_type)
@@ -687,8 +835,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Make request with optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
         response = await self.client.delete(path, headers=headers)
 
         # Handle 204 No Content
@@ -705,6 +852,7 @@ class EntityToolsHandler:
         data: dict | None = None,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Execute a custom action on an entity (start, stop, cancel, etc.)."""
         entity = self.registry.get_entity(entity_type)
@@ -741,8 +889,7 @@ class EntityToolsHandler:
                 "provided_params": path_params,
             }
 
-        # Get optional cross-tenant headers
-        headers = self._get_headers_for_org(org_id)
+        headers = await self._get_request_headers(org_id, ctx)
 
         # Handle multipart/form-data (file uploads)
         if op.is_multipart and data:
@@ -821,6 +968,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """Create a new entity of the specified type.
 
@@ -835,7 +983,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             The created entity data or an error with validation details.
         """
-        return await handler.create(entity_type, data, path_params, org_id)
+        return await handler.create(entity_type, data, path_params, org_id, ctx)
 
     @mcp.tool()
     async def get_entity(
@@ -843,6 +991,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """Get an entity by its ID.
 
@@ -855,7 +1004,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             The entity data or an error if not found.
         """
-        return await handler.get(entity_type, id, path_params, org_id)
+        return await handler.get(entity_type, id, path_params, org_id, ctx)
 
     @mcp.tool()
     async def list_entities(
@@ -863,6 +1012,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         filters: dict | None = None,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """List entities of the specified type with optional filtering.
 
@@ -876,7 +1026,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             A list of entities or paginated response.
         """
-        return await handler.list(entity_type, filters, path_params, org_id)
+        return await handler.list(entity_type, filters, path_params, org_id, ctx)
 
     @mcp.tool()
     async def update_entity(
@@ -885,6 +1035,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """Update an existing entity.
 
@@ -898,7 +1049,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             The updated entity data or an error with validation details.
         """
-        return await handler.update(entity_type, id, data, path_params, org_id)
+        return await handler.update(entity_type, id, data, path_params, org_id, ctx)
 
     @mcp.tool()
     async def delete_entity(
@@ -906,6 +1057,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """Delete an entity by its ID.
 
@@ -918,7 +1070,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             Success confirmation or an error.
         """
-        return await handler.delete(entity_type, id, path_params, org_id)
+        return await handler.delete(entity_type, id, path_params, org_id, ctx)
 
     @mcp.tool()
     async def entity_action(
@@ -928,6 +1080,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict | None = None,
         path_params: dict | None = None,
         org_id: str | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         """Execute a custom action on an entity (start, stop, cancel, etc.).
 
@@ -942,4 +1095,4 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Returns:
             Action result or an error.
         """
-        return await handler.action(entity_type, action, id, data, path_params, org_id)
+        return await handler.action(entity_type, action, id, data, path_params, org_id, ctx)

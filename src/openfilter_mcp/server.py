@@ -19,7 +19,10 @@ Configuration:
 
 import asyncio
 import json
+import logging
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import httpx
@@ -27,6 +30,8 @@ import httpx
 from code_context.indexing import INDEXES_DIR
 from code_context.main import _get_chunk, _search_index
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
+from fastmcp.server.elicitation import AcceptedElicitation
 
 from openfilter_mcp.auth import (
     PLAINSIGHT_API_URL,
@@ -34,11 +39,18 @@ from openfilter_mcp.auth import (
     get_auth_token,
     get_effective_org_id,
     is_plainsight_employee,
+    read_psctl_token,
     AuthenticationError,
     TokenRefreshTransport,
 )
 from openfilter_mcp.entity_tools import register_entity_tools
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
+
+logger = logging.getLogger(__name__)
+
+# Session state key for the scoped API token
+_SESSION_TOKEN_KEY = "scoped_api_token"
+_SESSION_TOKEN_META_KEY = "scoped_api_token_meta"
 
 
 # =============================================================================
@@ -263,6 +275,20 @@ def _real_path(path):
 # Create MCP Server from OpenAPI Spec
 # =============================================================================
 
+_SERVER_INSTRUCTIONS = """
+OpenFilter MCP provides entity CRUD tools for the Plainsight API and semantic code search over the Plainsight monorepo.
+
+Token scoping: The server starts with a default token that has full API access. Before performing write or delete operations, request a scoped token with the minimum permissions needed:
+- Use `request_scoped_token` with a comma-separated list of "resource:action" scopes. The user will be asked to approve.
+- Once approved, the scoped token is stored in the session and used automatically for all subsequent API calls.
+- Use `get_token_status` to check current permissions and expiry.
+- Use `clear_scoped_token` to revert to the default full-access token.
+
+Scope format: "resource:action" where action is read, create, update, delete, or * for all actions on that resource. Examples: "project:read,deployment:create", "filterpipeline:*,pipelineinstance:*".
+
+Always prefer narrowly scoped tokens for operations that modify or delete data.
+""".strip()
+
 
 def create_mcp_server() -> FastMCP:
     """Create the MCP server with entity-based API tools and code search tools.
@@ -272,7 +298,7 @@ def create_mcp_server() -> FastMCP:
         If no authentication token is available, only code search tools are registered.
     """
     # Create base MCP server
-    mcp = FastMCP(name="OpenFilter MCP")
+    mcp = FastMCP(name="OpenFilter MCP", instructions=_SERVER_INSTRUCTIONS)
 
     # Try to create authenticated client and load OpenAPI tools
     # If no token is available, we'll still create a server with code search tools
@@ -412,6 +438,202 @@ def create_mcp_server() -> FastMCP:
                 "last_value": last_value,
                 "elapsed_seconds": elapsed,
             }
+
+    # =========================================================================
+    # Token Scoping Tools (available when authenticated)
+    # =========================================================================
+
+    if has_auth and client:
+
+        @mcp.tool()
+        async def request_scoped_token(
+            scopes: str,
+            name: str = "openfilter-mcp-agent",
+            expires_in_hours: int = 1,
+            ctx: Context = None,
+        ) -> Dict[str, Any]:
+            """Request a scoped API token with limited permissions for this session.
+
+            This creates a new API token with only the permissions you need,
+            replacing the default full-access token for subsequent API calls.
+            The user will be asked to approve the requested scopes.
+
+            You will NOT see the token value — it is stored securely in the
+            session and used automatically for subsequent API calls.
+
+            Args:
+                scopes: Comma-separated list of permission scopes to request.
+                    Format: "resource:action" where action is read, create, update, or delete.
+                    Use "resource:*" for all actions on a resource.
+                    Available resources: project, organization, deployment, model, training,
+                    filter, filterpipeline, pipelineversion, pipelineinstance, sourceconfig,
+                    filterimage, filterregistry, filtersubscription, filtertopic,
+                    filterparameter, secret, syntheticvideo, videoupload, videorecording,
+                    videocorpus, artifact, agent, apitoken, user.
+                    Examples: "project:read,deployment:read,deployment:create",
+                             "filterpipeline:*,pipelineinstance:*"
+                name: A name for this token (for identification in the portal).
+                expires_in_hours: How long the token should be valid (default: 1 hour).
+
+            Returns:
+                Confirmation of which scopes were granted (token value is hidden).
+            """
+            if not ctx:
+                return {"error": "This tool requires an interactive session with elicitation support."}
+
+            scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+            if not scope_list:
+                return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
+
+            scope_pattern = re.compile(r'^[a-z]+:(read|create|update|delete|\*)$')
+            invalid = [s for s in scope_list if not scope_pattern.match(s)]
+            if invalid:
+                return {"error": f"Invalid scope format: {invalid}. Expected 'resource:action' where action is read, create, update, delete, or *."}
+
+            if expires_in_hours < 1:
+                return {"error": "expires_in_hours must be at least 1."}
+            if expires_in_hours > 720:  # 30 days
+                return {"error": "expires_in_hours cannot exceed 720 (30 days)."}
+
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_in_hours)
+
+            # Ask the user for approval via elicitation (the LLM never sees this dialog)
+            scope_lines = "\n".join(f"  - {s}" for s in scope_list)
+            approval = await ctx.elicit(
+                f"The AI agent is requesting a scoped API token.\n\n"
+                f"Token name: {name}\n"
+                f"Requested scopes:\n{scope_lines}\n\n"
+                f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                f"Do you approve?",
+                ["Approve", "Deny"],
+            )
+
+            # Check if user approved
+            if not isinstance(approval, AcceptedElicitation) or approval.data != "Approve":
+                return {"status": "denied", "message": "User denied the token request."}
+
+            # Get the user's org ID from the current token
+            token = read_psctl_token() or get_auth_token()
+            org_id = get_effective_org_id(token)
+            if not org_id:
+                return {"error": "Cannot determine organization ID from current token."}
+
+            # Create the scoped token via the Plainsight API
+            try:
+                response = await client.post(
+                    "/api-tokens",
+                    json={
+                        "name": name,
+                        "scopes": scope_list,
+                        "expires_at": expires_at.isoformat(),
+                    },
+                    headers={"X-Scope-OrgID": org_id},
+                )
+
+                if response.status_code >= 400:
+                    try:
+                        error_body = response.json()
+                    except Exception:
+                        error_body = response.text
+                    return {
+                        "error": f"Failed to create scoped token: API returned {response.status_code}",
+                        "details": error_body,
+                    }
+
+                result = response.json()
+                plaintext_token = result.get("token")
+                token_id = result.get("id")
+
+                if not plaintext_token:
+                    return {"error": "API did not return a token in the response."}
+
+                # Store the token in session state — the LLM never sees this
+                await ctx.set_state(_SESSION_TOKEN_KEY, plaintext_token)
+                await ctx.set_state(_SESSION_TOKEN_META_KEY, {
+                    "id": token_id,
+                    "name": result.get("name", name),
+                    "scopes": scope_list,
+                    "expires_at": expires_at.isoformat(),
+                    "org_id": org_id,
+                })
+
+                # Log the token to the user's UI (invisible to the LLM)
+                await ctx.info(
+                    f"Scoped token activated (ID: {token_id}). "
+                    f"This token will be used automatically for subsequent API calls. "
+                    f"You can revoke it in the portal or via the API."
+                )
+
+                logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
+
+                # Return only metadata to the LLM — no token value
+                return {
+                    "status": "active",
+                    "message": "Scoped token created and activated for this session.",
+                    "token_name": result.get("name", name),
+                    "scopes": scope_list,
+                    "expires_at": expires_at.isoformat(),
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to create scoped token: {e}")
+                return {"error": f"Failed to create scoped token: {str(e)}"}
+
+        @mcp.tool()
+        async def get_token_status(ctx: Context = None) -> Dict[str, Any]:
+            """Check the current token status for this session.
+
+            Returns information about whether a scoped token is active,
+            what permissions it has, and when it expires.
+            The actual token value is never shown.
+
+            Returns:
+                Token status including scopes and expiration, or indication
+                that the default (full-access) token is being used.
+            """
+            if not ctx:
+                return {"status": "unknown", "message": "No session context available."}
+            meta = await ctx.get_state(_SESSION_TOKEN_META_KEY)
+            if meta:
+                expires_at_str = meta.get("expires_at")
+                if expires_at_str:
+                    expires_at = datetime.fromisoformat(expires_at_str)
+                    if expires_at < datetime.now(timezone.utc):
+                        return {
+                            "status": "expired",
+                            "message": f"Scoped token '{meta.get('name')}' has expired. Use clear_scoped_token and request_scoped_token to get a new one.",
+                            "expired_at": expires_at_str,
+                        }
+                return {
+                    "status": "scoped",
+                    "message": "A scoped token is active for this session.",
+                    "token_name": meta.get("name"),
+                    "scopes": meta.get("scopes"),
+                    "expires_at": meta.get("expires_at"),
+                }
+            return {
+                "status": "default",
+                "message": "Using the default server token (full access). "
+                "Use request_scoped_token to create a limited-permission token.",
+            }
+
+        @mcp.tool()
+        async def clear_scoped_token(ctx: Context = None) -> Dict[str, Any]:
+            """Clear the scoped token for this session, reverting to the default server token.
+
+            Use this if the scoped token has expired or you need different permissions.
+
+            Returns:
+                Confirmation that the scoped token was cleared.
+            """
+            if not ctx:
+                return {"error": "This tool requires an interactive session."}
+            meta = await ctx.get_state(_SESSION_TOKEN_META_KEY)
+            await ctx.set_state(_SESSION_TOKEN_KEY, None)
+            await ctx.set_state(_SESSION_TOKEN_META_KEY, None)
+            if meta:
+                return {"status": "cleared", "message": f"Scoped token '{meta.get('name')}' cleared. Using default server token."}
+            return {"status": "no_change", "message": "No scoped token was active."}
 
     return mcp
 

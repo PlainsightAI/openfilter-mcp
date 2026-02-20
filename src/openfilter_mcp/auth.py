@@ -462,15 +462,21 @@ def create_token_verifier() -> DebugTokenVerifier:
 
 
 def get_auth_token() -> Optional[str]:
-    """Get the bearer token from psctl config.
+    """Get the bearer token for API authentication.
 
-    Reads token from psctl CLI config (~/.config/plainsight/token).
-    This allows users who have authenticated via `psctl login` to use the MCP
-    server without additional configuration.
+    Checks for a token in the following order:
+    1. OPENFILTER_TOKEN env var - Pre-scoped API token (e.g., from web portal).
+       Takes priority because it's an explicit operator choice for a scoped token
+       and enables Docker/CI deployments where no psctl token file exists.
+    2. psctl CLI config (~/.config/plainsight/token) - Token from `psctl login`.
+       This is the user's full-access token with automatic refresh support.
 
     Returns:
         The raw bearer token string, or None if not authenticated.
     """
+    env_token = os.getenv("OPENFILTER_TOKEN")
+    if env_token:
+        return env_token
     return read_psctl_token()
 
 
