@@ -636,6 +636,39 @@ class TestEntitySearch:
             assert results == [], f"Expected [] for malformed query {bad_query!r}"
 
 
+class TestEntitySearchWithSparseSpec:
+    """Tests for search with entities that have None/missing optional fields."""
+
+    SPARSE_SPEC = {
+        "openapi": "3.0.0",
+        "info": {"title": "Sparse API", "version": "1.0.0"},
+        "components": {"schemas": {}},
+        "paths": {
+            "/widgets": {
+                "get": {
+                    "operationId": "widget_list",
+                    # No summary key at all
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+        },
+    }
+
+    def test_sparse_spec_does_not_crash(self):
+        """Registry with missing summary/description fields builds without error."""
+        registry = EntityRegistry(self.SPARSE_SPEC)
+        results = registry.list_entity_summaries()
+        assert len(results) == 1
+        assert results[0]["name"] == "widget"
+
+    def test_sparse_spec_search_works(self):
+        """FTS still works when corpus has missing fields."""
+        registry = EntityRegistry(self.SPARSE_SPEC)
+        results = registry.list_entity_summaries("widget")
+        names = [r["name"] for r in results]
+        assert "widget" in names
+
+
 class TestGetEntityTypeInfo:
     """Tests for get_entity_info_for."""
 

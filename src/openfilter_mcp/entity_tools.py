@@ -396,7 +396,7 @@ class EntityRegistry:
                 desc = param.get("description", "")
                 if desc:
                     parts.append(desc)
-        return " ".join(parts)
+        return " ".join(p for p in parts if p)
 
     def _build_search_index(self):
         """Build an in-memory tantivy search index over entity metadata."""
@@ -452,14 +452,17 @@ class EntityRegistry:
     def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
         """Get detailed info for specific entities by name."""
         result = {}
+        available = None
         for name in names:
             entity = self.entities.get(name)
             if entity:
                 result[name] = self._format_entity_info(entity)
             else:
+                if available is None:
+                    available = self.list_entities()
                 result[name] = {
                     "error": f"Unknown entity type: {name}",
-                    "available_entities": self.list_entities(),
+                    "available_entities": available,
                 }
         return result
 
