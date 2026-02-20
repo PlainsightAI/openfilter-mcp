@@ -1,7 +1,7 @@
 DOCKERHUB_REPO := plainsightai/openfilter-mcp
 PLATFORMS := linux/amd64,linux/arm64
 
-.PHONY: help docker-extract-indexes docker-build docker-push docker-build-push docker-inspect
+.PHONY: help docker-extract-indexes docker-build docker-push docker-build-push docker-inspect docker-build-slim docker-push-slim
 
 help:
 	@echo "Docker build targets:"
@@ -9,6 +9,8 @@ help:
 	@echo "  make docker-build            - Build multi-arch image locally"
 	@echo "  make docker-push             - Build and push multi-arch image"
 	@echo "  make docker-inspect          - Inspect image contents per platform"
+	@echo "  make docker-build-slim       - Build slim multi-arch image (no code search)"
+	@echo "  make docker-push-slim        - Build and push slim multi-arch image"
 
 # Extract indexes and repo clones from a working amd64 image
 docker-extract-indexes:
@@ -59,3 +61,24 @@ docker-inspect:
 	docker create --platform linux/arm64 --name arm64-inspect $(DOCKERHUB_REPO):latest
 	docker export arm64-inspect | tar -tvf - | grep "app/indexes"
 	docker rm arm64-inspect
+
+# Build slim multi-arch image locally (no code search, no indexes)
+docker-build-slim:
+	docker buildx create --use --name multiarch 2>/dev/null || docker buildx use multiarch
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--no-cache \
+		-t $(DOCKERHUB_REPO):latest-slim \
+		-t $(DOCKERHUB_REPO):0.1.0-slim \
+		-f Dockerfile.slim .
+
+# Build and push slim multi-arch image
+docker-push-slim:
+	docker buildx create --use --name multiarch 2>/dev/null || docker buildx use multiarch
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--no-cache \
+		-t $(DOCKERHUB_REPO):latest-slim \
+		-t $(DOCKERHUB_REPO):0.1.0-slim \
+		--push \
+		-f Dockerfile.slim .

@@ -30,25 +30,54 @@ These tools provide semantic code search capabilities on indexed repositories:
 
 [fastmcp-openapi]: https://gofastmcp.com/integrations/openapi
 
-This project uses [uv]. first, install dependencies;
+This project uses [uv].
 
-```uv sync```
+### Full install (with code search)
+
+Install dependencies including semantic search:
+
+```bash
+uv sync --extra code-search
+```
 
 Preindex:
 
-```uv run index```
+```bash
+uv run index
+```
 
 And finally, serve:
 
-```uv run serve```
+```bash
+uv run serve
+```
+
+### Slim install (API tools only)
+
+For a lightweight install without semantic code search, embedding models, or ML dependencies:
+
+```bash
+uv sync
+uv run serve
+```
+
+The slim variant provides all Plainsight API tools (entity CRUD, polling, etc.) but omits code search tools (`search`, `search_code`, `get_chunk`, `read_file`).
 
 ## Docker
 
-You can build and run this with Docker:
+You can build and run this with Docker. Both full and slim image variants are published:
+
+| Tag | Description |
+|-----|-------------|
+| `latest` / `0.1.0` | Full build with semantic code search and pre-built indexes |
+| `latest-slim` / `0.1.0-slim` | Slim build with API tools only (no ML dependencies) |
 
 ```bash
-# Run the container
+# Run the full container (with code search)
 docker run --name openfilter-mcp -d -p 3000:3000 plainsightai/openfilter-mcp
+
+# Run the slim container (API tools only, much smaller image)
+docker run --name openfilter-mcp -d -p 3000:3000 plainsightai/openfilter-mcp:latest-slim
 
 # Check logs
 docker logs openfilter-mcp

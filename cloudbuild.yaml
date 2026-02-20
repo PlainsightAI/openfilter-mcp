@@ -176,6 +176,95 @@ steps:
           --push \
           -f Dockerfile.gpu .
 
+  # Docker build and push (slim variant - no code search, no indexes)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
+    args:
+      - '-c'
+      - |
+        # Reuse the buildx builder and QEMU setup from the previous step
+
+        # Configure GAR auth if this is a PR or dev build
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
+          if [[ -f /workspace/.gar_token ]]; then
+            GAR_TOKEN=$$(cat /workspace/.gar_token)
+            AUTH_B64=$$(echo -n "oauth2accesstoken:$$GAR_TOKEN" | base64 -w0)
+            mkdir -p /builder/home/.docker
+            printf '{\n  "auths": {\n    "us-west1-docker.pkg.dev": {\n      "auth": "%s"\n    }\n  }\n}\n' "$$AUTH_B64" > /builder/home/.docker/config.json
+          fi
+        fi
+
+        # Recreate buildx builder (each step gets a fresh container)
+        docker run --privileged multiarch/qemu-user-static --reset -p yes
+        docker buildx rm multiarch-builder 2>/dev/null || true
+        DOCKER_CONFIG=/builder/home/.docker docker buildx create --name multiarch-builder \
+          --driver docker-container \
+          --use
+        docker buildx inspect --bootstrap
+
+        # PR builds → GAR only
+        if [[ -n "${_PR_NUMBER}" ]]; then
+          echo "PR slim build #${_PR_NUMBER}: pushing to GAR oci"
+          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t ${_GAR_REPO}:pr-${_PR_NUMBER}-slim \
+            -t ${_GAR_REPO}:${SHORT_SHA}-slim \
+            --push \
+            -f Dockerfile.slim .
+          exit 0
+        fi
+
+        # Dev tag builds (v*-dev) → GAR only
+        if [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
+          DEV_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
+          echo "Dev tag slim build: ${TAG_NAME} → pushing to GAR oci"
+          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t ${_GAR_REPO}:$$DEV_VERSION-slim \
+            -t ${_GAR_REPO}:${SHORT_SHA}-slim \
+            --push \
+            -f Dockerfile.slim .
+          exit 0
+        fi
+
+        # Main/tag builds → DockerHub
+        echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin
+
+        if [[ "${TAG_NAME}" =~ ^v ]]; then
+          NEW_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
+
+          LATEST_DIGEST=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/latest-slim" | \
+            jq -r '.images[0].digest // empty')
+
+          if [[ -n "$$LATEST_DIGEST" ]]; then
+            CURRENT_VERSION=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
+              jq -r --arg digest "$$LATEST_DIGEST" \
+              '.results[] | select(.images[].digest == $$digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+-slim$")) | sub("-slim$"; "")' | \
+              sed 's/^v//' | head -1)
+          fi
+          CURRENT_VERSION="$${CURRENT_VERSION:-0.0.0}"
+
+          version_gte() {
+            [ "$$(printf '%s\n' "$$1" "$$2" | sort -V | tail -n1)" = "$$1" ]
+          }
+
+          if version_gte "$$NEW_VERSION" "$$CURRENT_VERSION"; then
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}-slim -t ${_DOCKERHUB_REPO}:latest-slim -t ${_DOCKERHUB_REPO}:$$NEW_VERSION-slim"
+          else
+            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}-slim -t ${_DOCKERHUB_REPO}:$$NEW_VERSION-slim"
+          fi
+        else
+          _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}-slim"
+        fi
+        echo "Building slim with tags: $$_TAGS"
+
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $$_TAGS \
+          --push \
+          -f Dockerfile.slim .
+
   # Cleanup
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     args: ['bash', '-c', 'gsutil -m rm -r gs://${_GCS_BUCKET}/builds/${BUILD_ID}/ || true']
