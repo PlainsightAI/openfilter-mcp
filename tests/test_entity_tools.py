@@ -630,10 +630,10 @@ class TestEntitySearch:
         assert "model" in names
 
     def test_search_malformed_query(self, registry):
-        """Malformed tantivy query syntax returns empty list, not an exception."""
+        """Malformed tantivy query syntax raises ValueError."""
         for bad_query in ["NOT", 'field:', '"unclosed', "AND OR"]:
-            results = registry.list_entity_summaries(bad_query)
-            assert results == [], f"Expected [] for malformed query {bad_query!r}"
+            with pytest.raises(ValueError):
+                registry.list_entity_summaries(bad_query)
 
 
 class TestEntitySearchWithSparseSpec:
