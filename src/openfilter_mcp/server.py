@@ -2,8 +2,9 @@
 
 Provides tools for interacting with the Plainsight API and code search:
 
-1. **Entity-Based API Tools** (7 tools instead of 100+):
-   - `list_entity_types`: Discover available entities and their schemas
+1. **Entity-Based API Tools** (8 tools instead of 100+):
+   - `list_entity_types`: Discover available entities with optional full-text search
+   - `get_entity_type_info`: Get full operation metadata for specific entity types
    - `create_entity`, `get_entity`, `list_entities`, `update_entity`, `delete_entity`: CRUD operations
    - `entity_action`: Custom actions like start, stop, cancel
 

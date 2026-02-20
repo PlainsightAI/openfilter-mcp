@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import tantivy
+
 import httpx
 import jsonschema
 from jsonschema import ValidationError as JsonSchemaValidationError
@@ -65,6 +67,7 @@ class EntityRegistry:
         self.entities: dict[str, Entity] = {}
         self._component_schemas = openapi_spec.get("components", {}).get("schemas", {})
         self._parse_spec()
+        self._build_search_index()
 
     def _resolve_ref(self, schema: dict, seen: set[str] | None = None) -> dict:
         """Resolve $ref references in a schema, handling circular refs.
@@ -341,40 +344,118 @@ class EntityRegistry:
         """List all entity names."""
         return sorted(self.entities.keys())
 
-    def get_entity_info(self) -> dict[str, Any]:
-        """Get detailed info about all entities for discovery.
+    def _format_entity_info(self, entity: Entity) -> dict[str, Any]:
+        """Format detailed info for a single entity.
 
         Returns operation-level details including path templates and required parameters,
         giving callers the same information they would get from reading the raw OpenAPI spec.
         """
-        result = {}
-        for name, entity in sorted(self.entities.items()):
-            # Build detailed operation info
-            operations_detail = {}
-            for op_name, op in entity.operations.items():
-                op_info: dict[str, Any] = {
-                    "method": op.method,
-                    "path": op.path,
-                    "summary": op.summary,
-                }
-                # Only include path_params if there are any
-                if op.path_params:
-                    op_info["path_params"] = op.path_params
-                # Only include query_params if there are any
-                if op.query_params:
-                    op_info["query_params"] = {
-                        k: {"required": v["required"], "description": v.get("description", "")}
-                        for k, v in op.query_params.items()
-                    }
-                # Only include request_schema for operations that have request bodies
-                if op.request_schema:
-                    op_info["request_schema"] = op.request_schema
-                operations_detail[op_name] = op_info
-
-            result[name] = {
-                "description": entity.description,
-                "operations": operations_detail,
+        operations_detail = {}
+        for op_name, op in entity.operations.items():
+            op_info: dict[str, Any] = {
+                "method": op.method,
+                "path": op.path,
+                "summary": op.summary,
             }
+            # Only include path_params if there are any
+            if op.path_params:
+                op_info["path_params"] = op.path_params
+            # Only include query_params if there are any
+            if op.query_params:
+                op_info["query_params"] = {
+                    k: {"required": v["required"], "description": v.get("description", "")}
+                    for k, v in op.query_params.items()
+                }
+            # Only include request_schema for operations that have request bodies
+            if op.request_schema:
+                op_info["request_schema"] = op.request_schema
+            operations_detail[op_name] = op_info
+
+        return {
+            "description": entity.description,
+            "operations": operations_detail,
+        }
+
+    def get_entity_info(self) -> dict[str, Any]:
+        """Get detailed info about all entities for discovery."""
+        return {name: self._format_entity_info(entity) for name, entity in sorted(self.entities.items())}
+
+    def _build_entity_corpus(self, entity: Entity) -> str:
+        """Build a single searchable string from all fields of an entity."""
+        parts = [entity.name, entity.description]
+        for op in entity.operations.values():
+            parts.append(op.summary)
+            parts.append(op.path)
+            parts.append(op.operation_id)
+            for param_name in op.path_params:
+                parts.append(param_name)
+            for key, param in op.query_params.items():
+                parts.append(key)
+                desc = param.get("description", "")
+                if desc:
+                    parts.append(desc)
+        return " ".join(parts)
+
+    def _build_search_index(self):
+        """Build an in-memory tantivy search index over entity metadata."""
+        schema_builder = tantivy.SchemaBuilder()
+        schema_builder.add_text_field("entity_name", stored=True, tokenizer_name="raw")
+        schema_builder.add_text_field("corpus", stored=True, tokenizer_name="en_stem")
+        schema = schema_builder.build()
+        self._search_index = tantivy.Index(schema)
+
+        writer = self._search_index.writer()
+        for name, entity in self.entities.items():
+            corpus = self._build_entity_corpus(entity)
+            writer.add_document(tantivy.Document(
+                entity_name=[name],
+                corpus=[corpus],
+            ))
+        writer.commit()
+        self._search_index.reload()
+
+    def list_entity_summaries(self, query: str | None = None) -> list[dict[str, Any]]:
+        """List entity summaries, optionally filtered by full-text search query."""
+        if query is None:
+            return [
+                {"name": name, "description": entity.description, "highlights": None}
+                for name, entity in sorted(self.entities.items())
+            ]
+
+        searcher = self._search_index.searcher()
+        parsed_query = self._search_index.parse_query(query, ["corpus"])
+        search_results = searcher.search(parsed_query, limit=len(self.entities))
+
+        snippet_generator = tantivy.SnippetGenerator.create(
+            searcher, parsed_query, self._search_index.schema, "corpus"
+        )
+
+        results = []
+        for _score, doc_address in search_results.hits:
+            doc = searcher.doc(doc_address)
+            entity_name = doc["entity_name"][0]
+            entity = self.entities[entity_name]
+            snippet = snippet_generator.snippet_from_doc(doc)
+            highlights = snippet.to_html() or None
+            results.append({
+                "name": entity_name,
+                "description": entity.description,
+                "highlights": highlights,
+            })
+        return results
+
+    def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
+        """Get detailed info for specific entities by name."""
+        result = {}
+        for name in names:
+            entity = self.entities.get(name)
+            if entity:
+                result[name] = self._format_entity_info(entity)
+            else:
+                result[name] = {
+                    "error": f"Unknown entity type: {name}",
+                    "available_entities": self.list_entities(),
+                }
         return result
 
 
@@ -789,6 +870,14 @@ class EntityToolsHandler:
         """Get all entity schemas for discovery."""
         return self.registry.get_entity_info()
 
+    def list_entity_summaries(self, query: str | None = None) -> list[dict[str, Any]]:
+        """List entity summaries, optionally filtered by search query."""
+        return self.registry.list_entity_summaries(query)
+
+    def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
+        """Get detailed info for specific entities by name."""
+        return self.registry.get_entity_info_for(names)
+
 
 def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
     """Register entity-based CRUD tools on an MCP server.
@@ -802,13 +891,44 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
     handler = EntityToolsHandler(client, registry)
 
     @mcp.tool()
-    def list_entity_types() -> dict[str, Any]:
-        """List all available API entity types and their operations.
+    def list_entity_types(query: str | None = None) -> list[dict[str, Any]]:
+        """List available API entity types, optionally filtered by search query.
 
-        Returns a dictionary of entity names to their available operations and schemas.
-        Use this to discover what entities exist and what you can do with them.
+        Returns lightweight summaries (name + description) for each entity type.
+        When a query is provided, results are filtered using full-text search
+        and ranked by relevance, with matching highlights included.
+
+        Use get_entity_type_info() to retrieve full operation metadata for
+        specific entity types.
+
+        Args:
+            query: Optional search query to filter entity types. Supports natural
+                   language search with stemming (e.g., "projects" matches "project").
+                   When omitted, returns all entity types.
+
+        Returns:
+            A list of entity summaries, each with 'name', 'description', and
+            'highlights' (non-null only when query is provided).
         """
-        return handler.get_entity_schemas()
+        return handler.list_entity_summaries(query)
+
+    @mcp.tool()
+    def get_entity_type_info(entity_names: list[str]) -> dict[str, Any]:
+        """Get full API metadata for specific entity types.
+
+        Returns detailed operation information including HTTP methods, URL paths,
+        path parameters, query parameters, and request schemas for the requested
+        entity types. Use list_entity_types() first to discover entity names.
+
+        Args:
+            entity_names: One or more entity type names to retrieve metadata for
+                         (e.g., ['project', 'organization']).
+
+        Returns:
+            A dictionary mapping entity names to their full operation metadata.
+            Unknown entity names will have an error entry with available entities listed.
+        """
+        return handler.get_entity_info_for(entity_names)
 
     # Cross-tenant org_id docstring fragment for reuse
     _ORG_ID_DOC = """org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
