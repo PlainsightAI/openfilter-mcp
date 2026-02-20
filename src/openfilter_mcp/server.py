@@ -345,6 +345,14 @@ def create_mcp_server() -> FastMCP:
             content = "\n".join(lines[start_line : start_line + line_count])
             return content
 
+    elif enable_code_search and not HAS_CODE_CONTEXT:
+        import sys
+        print(
+            "WARNING: ENABLE_CODE_SEARCH is true but code-context is not installed. "
+            "Install with: uv sync --extra code-search",
+            file=sys.stderr,
+        )
+
     # =========================================================================
     # Generic Polling Tool (only available with authentication)
     # =========================================================================
@@ -431,7 +439,8 @@ def create_mcp_server() -> FastMCP:
 
 def main():
     # Ensure necessary directories exist
-    os.makedirs(INDEXES_DIR, exist_ok=True)
+    if HAS_CODE_CONTEXT:
+        os.makedirs(INDEXES_DIR, exist_ok=True)
 
     # Create server at runtime (not at import time)
     mcp = create_mcp_server()

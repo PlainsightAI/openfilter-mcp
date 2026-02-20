@@ -18,6 +18,10 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
     clones them into a monorepo directory, and then indexes the monorepo
     using code_context's core indexing function.
     """
+    if index_repository_direct is None:
+        print("Error: code-context is not installed. Install with: uv sync --extra code-search")
+        return
+
     print(f"Fetching repositories for organization: {org_name}")
     headers = {"Accept": "application/vnd.github.v3+json"}
     github_token = os.getenv("GITHUB_TOKEN")
@@ -79,9 +83,6 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
             print(f"Error cloning {repo_url}: {e}")
 
     if cloned_repos_count > 0:
-        if index_repository_direct is None:
-            print("Error: code-context is not installed. Install with: uv sync --extra code-search")
-            return
         print(f"All repositories cloned. Now indexing the monorepo: {MONOREPO_CLONE_DIR}")
         try:
             index_name = index_repository_direct(
