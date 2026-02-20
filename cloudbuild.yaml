@@ -1,9 +1,8 @@
 # Docker build with GPU-accelerated index building via Cloud Run Jobs
-# Triggers: push to main, tag v*, PR to main
+# Trigger: tag v* (configured in infrastructure/terraform/gcp/artifacts/cloudbuild-triggers.tf)
 #
-# PR builds → GAR oci registry (dev testing, no DockerHub)
 # Dev tag builds (v*-dev) → GAR oci registry (dev testing, no DockerHub)
-# Main/tag builds → DockerHub (production)
+# Release tag builds (v*) → DockerHub (production, latest if semver >= current)
 
 substitutions:
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp

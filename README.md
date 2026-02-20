@@ -65,12 +65,12 @@ The slim variant provides all Plainsight API tools (entity CRUD, polling, etc.) 
 
 ## Docker
 
-You can build and run this with Docker. Both full and slim image variants are published:
+Both full and slim image variants are published to [Docker Hub](https://hub.docker.com/r/plainsightai/openfilter-mcp):
 
 | Tag | Description |
 |-----|-------------|
-| `latest` / `0.1.0` | Full build with semantic code search and pre-built indexes |
-| `latest-slim` / `0.1.0-slim` | Slim build with API tools only (no ML dependencies) |
+| `latest` / `<version>` | Full build with semantic code search and pre-built indexes |
+| `latest-slim` / `<version>-slim` | Slim build with API tools only (no ML dependencies) |
 
 ```bash
 # Run the full container (with code search)
@@ -169,6 +169,25 @@ The MCP server uses the same authentication as `psctl`. After running `psctl log
 ```
 </details>
 
+## Releasing
+
+Releases are automated via [Google Cloud Build](cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants.
+
+### Dev builds (testing)
+
+Dev tags push to Google Artifact Registry only (not Docker Hub). Images are automatically cleaned up after 30 days.
+
+```bash
+git tag v0.2.0-dev && git push origin v0.2.0-dev
+```
+
+### Production releases
+
+Non-dev tags push to Docker Hub. The `latest` / `latest-slim` tags are automatically updated if the new version is >= the current latest (semver comparison).
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
 [mcp]: https://anthropic.com/news/model-context-protocol
