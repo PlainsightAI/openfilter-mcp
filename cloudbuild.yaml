@@ -63,6 +63,8 @@ steps:
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     env: &docker-env
       - 'DRY_RUN=${_DRY_RUN}'
+      - 'TAG_NAME=${TAG_NAME}'
+      - 'SHORT_SHA=${SHORT_SHA}'
       - '_PR_NUMBER=${_PR_NUMBER}'
       - '_GAR_REPO=${_GAR_REPO}'
       - '_DOCKERHUB_REPO=${_DOCKERHUB_REPO}'
