@@ -13,9 +13,6 @@ dependencies = [
     "tantivy>=0.22.0",
 ]
 
-[project.optional-dependencies]
-code-search = ["code-context>=0.1.0"]
-
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
@@ -50,6 +47,7 @@ llama-cpp-python = [
 ]
 
 [dependency-groups]
+code-search = ["code-context>=0.1.0"]
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.0.2",

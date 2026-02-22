@@ -5,11 +5,12 @@ RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml README.md ./
 COPY src/ src/
+COPY code-context/ code-context/
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
-RUN uv sync --locked --no-dev || uv sync --no-dev
+RUN uv sync --no-dev
 
-CMD ["uv", "run", "serve"]
+CMD ["uv", "run", "--no-sync", "serve"]

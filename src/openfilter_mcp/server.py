@@ -38,14 +38,14 @@ from openfilter_mcp.auth import (
 from openfilter_mcp.entity_tools import register_entity_tools
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
-# code-context is an optional dependency (install with `uv sync --extra code-search`)
+# code-context is an optional dependency (install with `uv sync --group code-search`)
 try:
     from code_context.indexing import INDEXES_DIR
     from code_context.main import _get_chunk, _search_index
 
     HAS_CODE_CONTEXT = True
 except ImportError:
-    INDEXES_DIR = "indexes"
+    INDEXES_DIR = None
     HAS_CODE_CONTEXT = False
 
 
@@ -307,7 +307,7 @@ def create_mcp_server() -> FastMCP:
     # =========================================================================
 
     # Check if code search is enabled (default: true)
-    # Requires the code-search extra: `uv sync --extra code-search`
+    # Requires the code-search extra: `uv sync --group code-search`
     enable_code_search = os.getenv("ENABLE_CODE_SEARCH", "true").lower() == "true"
 
     if enable_code_search and HAS_CODE_CONTEXT:
@@ -350,7 +350,7 @@ def create_mcp_server() -> FastMCP:
         import sys
         print(
             "WARNING: ENABLE_CODE_SEARCH is true but code-context is not installed. "
-            "Install with: uv sync --extra code-search",
+            "Install with: uv sync --group code-search",
             file=sys.stderr,
         )
 
