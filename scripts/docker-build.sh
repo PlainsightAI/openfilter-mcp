@@ -48,8 +48,14 @@ fi
 # Configure GAR auth (PR and dev builds)
 # ---------------------------------------------------------------------------
 if [[ -n "${_PR_NUMBER:-}" ]] || [[ "${TAG_NAME:-}" =~ ^v.*-dev$ ]]; then
+  # Prefer pre-generated token from Step #0; fall back to gcloud if available
+  GAR_TOKEN=""
   if [[ -f /workspace/.gar_token ]]; then
     GAR_TOKEN=$(cat /workspace/.gar_token)
+  elif command -v gcloud &>/dev/null; then
+    GAR_TOKEN=$(gcloud auth print-access-token 2>/dev/null || true)
+  fi
+  if [[ -n "${GAR_TOKEN}" ]]; then
     AUTH_B64=$(echo -n "oauth2accesstoken:${GAR_TOKEN}" | base64 -w0)
     mkdir -p /builder/home/.docker
     printf '{\n  "auths": {\n    "us-west1-docker.pkg.dev": {\n      "auth": "%s"\n    }\n  }\n}\n' \

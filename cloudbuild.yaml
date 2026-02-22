@@ -8,6 +8,7 @@
 
 substitutions:
   _DRY_RUN: 'true'  # Terraform trigger overrides to "false" for automated runs
+  _SLIM_ONLY: 'false'  # Set to "true" to skip GPU indexing and full build
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp
   _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/oci/openfilter-mcp
   _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
@@ -32,6 +33,10 @@ steps:
       - '-c'
       - |
         set -e
+        # Auto-detect slim-only from tag name (e.g. v1.0.0-slim-dev)
+        SLIM_ONLY="${_SLIM_ONLY}"
+        if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
+        if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping index build"; exit 0; fi
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
 
@@ -56,27 +61,26 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
-    env:
+    env: &docker-env
       - 'DRY_RUN=${_DRY_RUN}'
       - '_PR_NUMBER=${_PR_NUMBER}'
       - '_GAR_REPO=${_GAR_REPO}'
       - '_DOCKERHUB_REPO=${_DOCKERHUB_REPO}'
     args:
       - '-c'
-      - 'bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest"'
+      - |
+        SLIM_ONLY="${_SLIM_ONLY}"; if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
+        if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping full build"; exit 0; fi
+        bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest"
 
   # Step 3: Slim Docker build (no code-context, no indexes, no ML deps)
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
-    env:
-      - 'DRY_RUN=${_DRY_RUN}'
-      - '_PR_NUMBER=${_PR_NUMBER}'
-      - '_GAR_REPO=${_GAR_REPO}'
-      - '_DOCKERHUB_REPO=${_DOCKERHUB_REPO}'
+    env: *docker-env
     args:
       - '-c'
-      - 'bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"'
+      - bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
 
   # Step 4: Cleanup build artifacts from GCS
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
