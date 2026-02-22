@@ -458,11 +458,28 @@ class EntityRegistry:
         writer.commit()
         self._search_index.reload()
 
+    @staticmethod
+    def _highlight_terms(text: str, terms: list[str]) -> str:
+        """Wrap occurrences of *terms* in markdown bold (case-insensitive)."""
+        for term in terms:
+            if not term:
+                continue
+            text = re.sub(
+                rf"(?i)({re.escape(term)})",
+                r"**\1**",
+                text,
+            )
+        return text
+
     def list_entity_summaries(self, query: str | None = None) -> list[dict[str, Any]]:
-        """List entity summaries, optionally filtered by full-text search query."""
+        """List entity summaries, optionally filtered by full-text search query.
+
+        When a query is provided, matching terms are highlighted inline in the
+        name and description fields using markdown bold (**term**).
+        """
         if query is None:
             return [
-                {"name": name, "description": entity.description, "highlights": None}
+                {"name": name, "description": entity.description}
                 for name, entity in sorted(self.entities.items())
             ]
 
@@ -470,21 +487,17 @@ class EntityRegistry:
         parsed_query = self._search_index.parse_query(query, ["corpus"])
         search_results = searcher.search(parsed_query, limit=len(self.entities))
 
-        snippet_generator = tantivy.SnippetGenerator.create(
-            searcher, parsed_query, self._search_index.schema, "corpus"
-        )
+        # Extract raw query terms for inline highlighting
+        terms = query.split()
 
         results = []
         for _score, doc_address in search_results.hits:
             doc = searcher.doc(doc_address)
             entity_name = doc["entity_name"][0]
             entity = self.entities[entity_name]
-            snippet = snippet_generator.snippet_from_doc(doc)
-            highlights = snippet.to_html() or None
             results.append({
-                "name": entity_name,
-                "description": entity.description,
-                "highlights": highlights,
+                "name": self._highlight_terms(entity_name, terms),
+                "description": self._highlight_terms(entity.description, terms),
             })
         return results
 
@@ -943,7 +956,8 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
 
         Returns lightweight summaries (name + description) for each entity type.
         When a query is provided, results are filtered using full-text search
-        and ranked by relevance, with matching highlights included.
+        with English stemming and ranked by BM25 relevance. Matching terms are
+        highlighted inline with <b> tags in the name and description fields.
 
         Use get_entity_type_info() to retrieve full operation metadata for
         specific entity types.
@@ -951,11 +965,11 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         Args:
             query: Optional search query to filter entity types. Supports natural
                    language search with stemming (e.g., "projects" matches "project").
-                   When omitted, returns all entity types.
+                   When omitted, returns all entity types sorted alphabetically.
 
         Returns:
-            A list of entity summaries, each with 'name', 'description', and
-            'highlights' (non-null only when query is provided).
+            A list of dicts with 'name' and 'description'. When a query is
+            provided, matching terms are wrapped in markdown bold inline.
         """
         return handler.list_entity_summaries(query)
 

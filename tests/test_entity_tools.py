@@ -1,5 +1,7 @@
 """Tests for entity-based API tools."""
 
+import re
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -550,21 +552,21 @@ class TestEntitySearch:
         return EntityRegistry(SAMPLE_OPENAPI_SPEC)
 
     def test_list_all_no_query(self, registry):
-        """No-query call returns all entities with highlights=None."""
+        """No-query call returns all entities without highlighting."""
         results = registry.list_entity_summaries()
         all_entities = registry.list_entities()
         assert len(results) == len(all_entities)
         for entry in results:
             assert "name" in entry
             assert "description" in entry
-            assert "highlights" in entry
-            assert entry["highlights"] is None
+            # No <b> tags when no query is provided
+            assert "**" not in entry["name"]
 
     def test_summary_shape(self, registry):
-        """Each entry has exactly {name, description, highlights}."""
+        """Each entry has exactly {name, description}."""
         results = registry.list_entity_summaries()
         for entry in results:
-            assert set(entry.keys()) == {"name", "description", "highlights"}
+            assert set(entry.keys()) == {"name", "description"}
 
     def test_all_results_sorted_by_name(self, registry):
         """No-query results are sorted alphabetically by name."""
@@ -572,60 +574,62 @@ class TestEntitySearch:
         names = [r["name"] for r in results]
         assert names == sorted(names)
 
+    @staticmethod
+    def _strip_tags(text: str) -> str:
+        """Remove markdown bold markers for assertions on raw name."""
+        return re.sub(r"\*\*", "", text)
+
+    def _raw_names(self, results: list[dict]) -> list[str]:
+        return [self._strip_tags(r["name"]) for r in results]
+
     def test_search_by_entity_name(self, registry):
         """Searching 'project' returns results including project."""
         results = registry.list_entity_summaries("project")
         assert len(results) > 0
-        names = [r["name"] for r in results]
-        assert "project" in names
+        assert "project" in self._raw_names(results)
 
     def test_search_case_insensitive(self, registry):
         """Searching 'PROJECT' (uppercase) still finds project."""
         results = registry.list_entity_summaries("PROJECT")
-        names = [r["name"] for r in results]
-        assert "project" in names
+        assert "project" in self._raw_names(results)
 
     def test_search_stemming(self, registry):
         """Searching 'projects' (plural) finds 'project' via stemming."""
         results = registry.list_entity_summaries("projects")
-        names = [r["name"] for r in results]
-        assert "project" in names
+        assert "project" in self._raw_names(results)
 
     def test_search_by_operation_summary(self, registry):
         """Searching 'cancel' finds training (has 'Cancel training' summary)."""
         results = registry.list_entity_summaries("cancel")
-        names = [r["name"] for r in results]
-        assert "training" in names
+        assert "training" in self._raw_names(results)
 
     def test_search_by_path(self, registry):
         """Searching 'trainings' finds training (path is /trainings/{id}/cancel)."""
         results = registry.list_entity_summaries("trainings")
-        names = [r["name"] for r in results]
-        assert "training" in names
+        assert "training" in self._raw_names(results)
 
     def test_search_by_path_param(self, registry):
         """Searching 'project_id' finds model (model ops have project_id param)."""
         results = registry.list_entity_summaries("project_id")
-        names = [r["name"] for r in results]
-        assert "model" in names
+        assert "model" in self._raw_names(results)
 
     def test_search_no_match(self, registry):
         """Searching gibberish returns empty list."""
         results = registry.list_entity_summaries("zzznomatchxyz")
         assert results == []
 
-    def test_search_results_have_highlights(self, registry):
-        """When query matches, each result has a non-None highlights string."""
+    def test_search_inline_highlighting(self, registry):
+        """When query matches, name and description contain <b> tags."""
         results = registry.list_entity_summaries("project")
         assert len(results) > 0
-        for entry in results:
-            assert entry["highlights"] is not None
-            assert isinstance(entry["highlights"], str)
+        project_entry = next(r for r in results if self._strip_tags(r["name"]) == "project")
+        assert "**project**" in project_entry["name"]
+        assert "**" in project_entry["description"]
 
     def test_search_multi_word(self, registry):
         """Multi-word query 'project model' returns both project and model."""
         results = registry.list_entity_summaries("project model")
-        names = [r["name"] for r in results]
+        names = self._raw_names(results)
         assert "project" in names
         assert "model" in names
 
@@ -665,7 +669,7 @@ class TestEntitySearchWithSparseSpec:
         """FTS still works when corpus has missing fields."""
         registry = EntityRegistry(self.SPARSE_SPEC)
         results = registry.list_entity_summaries("widget")
-        names = [r["name"] for r in results]
+        names = [re.sub(r"\*\*", "", r["name"]) for r in results]
         assert "widget" in names
 
 
