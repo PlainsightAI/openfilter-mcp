@@ -21,24 +21,6 @@ build-backend = "uv_build"
 index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
-[tool.uv]
-config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
-
-[[tool.uv.index]]
-name = "llama-cpp-python-cuda"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
-explicit = true
-
-[[tool.uv.index]]
-name = "llama-cpp-python-metal"
-url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
-explicit = true
-
-[[tool.uv.index]]
-name = "llama-cpp-python-cpu"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
-explicit = true
-
 [tool.uv.sources]
 code-context = { path = "./code-context" }
 

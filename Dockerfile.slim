@@ -10,7 +10,17 @@ COPY src/ src/
 
 # Stub out code-context so uv can resolve the workspace source path,
 # but without its [tool.uv.sources] that trigger a slow git clone
-RUN mkdir -p code-context && printf '[project]\nname = "code-context"\nversion = "0.1.0"\nrequires-python = ">=3.10,<3.13"\ndependencies = []\n\n[build-system]\nrequires = ["uv_build>=0.9.6,<0.10.0"]\nbuild-backend = "uv_build"\n' > code-context/pyproject.toml
+RUN mkdir -p code-context && cat > code-context/pyproject.toml <<'STUB'
+[project]
+name = "code-context"
+version = "0.1.0"
+requires-python = ">=3.10,<3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
+STUB
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
