@@ -171,15 +171,21 @@ The MCP server uses the same authentication as `psctl`. After running `psctl log
 
 ## Releasing
 
-Releases are automated via [Google Cloud Build](cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants.
+Releases are automated via [Google Cloud Build](cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants. Builds are dry-run by default (images built but not pushed) — the Terraform-managed trigger sets `_DRY_RUN=false` to enable pushing.
 
 ### Dev builds (testing)
 
-Dev tags push to Google Artifact Registry only (not Docker Hub). Images are automatically cleaned up after 30 days.
+Dev tags push to Google Artifact Registry only (not Docker Hub).
 
 ```bash
+# Full + slim build
 git tag v0.2.0-dev && git push origin v0.2.0-dev
+
+# Slim-only build (skips GPU indexing, much faster)
+git tag v0.2.0-slim-dev && git push origin v0.2.0-slim-dev
 ```
+
+Tags containing `slim` automatically skip the GPU index build and full image build. Both `v*-slim-dev` and `v*-dev-slim` are supported and normalize to the same image tags.
 
 ### Production releases
 
@@ -187,6 +193,18 @@ Non-dev tags push to Docker Hub. The `latest` / `latest-slim` tags are automatic
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
+```
+
+### Local testing
+
+The shared build script can be run locally (dry-run by default — builds but does not push):
+
+```bash
+# Build slim image locally
+docker build -f Dockerfile.slim -t openfilter-mcp:slim .
+
+# Test the full build script (requires Docker + buildx)
+bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
 ```
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
