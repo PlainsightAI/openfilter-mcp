@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import inflect
 import tantivy
 
 import httpx
@@ -30,6 +31,8 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from openfilter_mcp.auth import get_auth_token, is_plainsight_employee
 
 logger = logging.getLogger(__name__)
+
+_inflect_engine = inflect.engine()
 
 
 @dataclass
@@ -116,21 +119,57 @@ class EntityRegistry:
     # Standard CRUD actions - used to parse operation IDs
     CRUD_ACTIONS = {"list", "get", "create", "update", "delete"}
     # Common custom actions found in REST APIs
-    CUSTOM_ACTIONS = {"start", "stop", "cancel", "download", "upload", "validate", "run", "execute"}
+    CUSTOM_ACTIONS = {
+        "start", "stop", "cancel", "download", "upload", "validate", "run",
+        "execute", "initiate", "restore", "export", "import", "ingest",
+        "webhook", "clone", "archive", "publish", "activate", "deactivate",
+        "enable", "disable", "sync", "probe", "check",
+    }
     ALL_ACTIONS = CRUD_ACTIONS | CUSTOM_ACTIONS
+
+    # Extracted names that indicate sub-routes, not real entities.
+    # If _extract_entity_name produces one of these, we walk up the path.
+    _NON_ENTITY_NAMES = {
+        "by_name", "by_number", "by_organization", "by_id", "by_email",
+        "url", "latest", "html", "error", "status", "compat",
+        "initiate", "initiate_compat", "create_and_execute",
+        "get", "list", "restore", "name", "number",
+    }
+
+    @staticmethod
+    def _singularize(word: str) -> str:
+        """Singularize a word using inflect, with dash-to-underscore normalization."""
+        word = word.replace("-", "_")
+        singular = _inflect_engine.singular_noun(word)
+        if singular:
+            return singular
+        return word
+
+    def _entity_name_from_path(self, path: str) -> str | None:
+        """Extract entity name from URL path, walking up segments to skip sub-routes."""
+        clean_path = re.sub(r"\{[^}]+\}", "", path)
+        path_parts = [p for p in clean_path.split("/") if p]
+
+        # Walk from the end of the path toward the root, skipping non-entity segments
+        for segment in reversed(path_parts):
+            candidate = self._singularize(segment)
+            if candidate not in self._NON_ENTITY_NAMES and candidate not in self.ALL_ACTIONS:
+                return candidate
+
+        return None
 
     def _extract_entity_name(self, path: str, operation_id: str) -> str | None:
         """Extract entity name from path or operation_id.
 
-        This is dynamically driven - it looks for patterns like:
-            entity-action (e.g., project-list, training-cancel)
-            parent-action-entity (e.g., organization-get-subscription)
-
-        Falls back to path-based extraction if operation_id doesn't match patterns.
+        Strategy:
+        1. Parse operation_id for {entity}_{action} or {parent}_{action}_{child} patterns.
+        2. If the result looks like a sub-route (in _NON_ENTITY_NAMES), fall back to path.
+        3. Path-based extraction walks segments from the end, skipping known non-entities.
         """
+        candidate = None
+
         # Try to extract from operation_id first (more reliable)
         if operation_id:
-            # Normalize: convert dashes to underscores for matching
             op_normalized = operation_id.replace("-", "_")
             parts = op_normalized.split("_")
 
@@ -142,32 +181,19 @@ class EntityRegistry:
                     break
 
             if action_idx is not None:
-                # If there's content after the action, that's the entity (compound case)
-                # e.g., organization_get_subscription -> subscription
                 if action_idx < len(parts) - 1:
-                    return "_".join(parts[action_idx + 1 :])
-                # Otherwise, content before the action is the entity
-                # e.g., project_list -> project
+                    # Content after the action, e.g. organization_get_subscription -> subscription
+                    candidate = "_".join(parts[action_idx + 1 :])
                 elif action_idx > 0:
-                    return "_".join(parts[:action_idx])
+                    # Content before the action, e.g. project_list -> project
+                    candidate = "_".join(parts[:action_idx])
+
+        # Validate the candidate — if it's a known sub-route pattern, fall back to path
+        if candidate and candidate not in self._NON_ENTITY_NAMES:
+            return candidate
 
         # Fall back to path-based extraction
-        # Remove path parameters and split
-        clean_path = re.sub(r"\{[^}]+\}", "", path)
-        path_parts = [p for p in clean_path.split("/") if p]
-
-        if path_parts:
-            # Take the last meaningful segment (the actual entity, not parent)
-            # For paths like /projects/{project_id}/videos, we want "video" not "project"
-            entity = path_parts[-1]
-            # Singularize if plural
-            if entity.endswith("ies"):
-                entity = entity[:-3] + "y"
-            elif entity.endswith("s") and not entity.endswith("ss"):
-                entity = entity[:-1]
-            return entity.replace("-", "_")
-
-        return None
+        return self._entity_name_from_path(path)
 
     def _classify_operation(self, method: str, path: str, operation_id: str) -> str | None:
         """Classify operation type from operation_id or HTTP method.
@@ -301,11 +327,11 @@ class EntityRegistry:
                 if not op_type:
                     continue
 
-                # Create or get entity
+                # Create or get entity (description is built after all ops are collected)
                 if entity_name not in self.entities:
                     self.entities[entity_name] = Entity(
                         name=entity_name,
-                        description=f"API operations for {entity_name.replace('_', ' ')}",
+                        description="",  # placeholder — populated by _build_descriptions()
                     )
 
                 entity = self.entities[entity_name]
@@ -337,6 +363,22 @@ class EntityRegistry:
                     entity.update_schema = op.request_schema
                 elif op_type == "get" and op.response_schema:
                     entity.response_schema = op.response_schema
+
+        # Now that all operations are collected, synthesize descriptions
+        self._build_descriptions()
+
+    def _build_descriptions(self):
+        """Build human-readable descriptions for each entity from its operation summaries."""
+        for entity in self.entities.values():
+            summaries = [
+                op.summary for op in entity.operations.values() if op.summary
+            ]
+            if summaries:
+                # Join unique summaries into a concise description
+                # e.g. "List all projects | Create a project | Get a project | ..."
+                entity.description = " | ".join(summaries)
+            else:
+                entity.description = f"API operations for {entity.name.replace('_', ' ')}"
 
     def get_entity(self, name: str) -> Entity | None:
         """Get entity by name."""

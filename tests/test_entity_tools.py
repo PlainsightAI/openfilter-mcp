@@ -710,3 +710,166 @@ class TestGetEntityTypeInfo:
         """Empty list returns empty dict."""
         result = registry.get_entity_info_for([])
         assert result == {}
+
+
+class TestSingularization:
+    """Tests for inflect-based singularization."""
+
+    def test_status_not_mangled(self):
+        """'status' should NOT become 'statu'."""
+        assert EntityRegistry._singularize("status") == "status"
+
+    def test_projects_singularized(self):
+        """'projects' → 'project'."""
+        assert EntityRegistry._singularize("projects") == "project"
+
+    def test_videos_singularized(self):
+        """'videos' → 'video'."""
+        assert EntityRegistry._singularize("videos") == "video"
+
+    def test_categories_singularized(self):
+        """'categories' → 'category'."""
+        assert EntityRegistry._singularize("categories") == "category"
+
+    def test_dashes_converted(self):
+        """Dashes are converted to underscores."""
+        assert "_" in EntityRegistry._singularize("filter-pipelines")
+
+    def test_singular_word_unchanged(self):
+        """Already-singular words are returned as-is."""
+        assert EntityRegistry._singularize("project") == "project"
+
+
+class TestSubRouteCollapsing:
+    """Tests that sub-route patterns collapse into their parent entity."""
+
+    SUB_ROUTE_SPEC = {
+        "openapi": "3.0.0",
+        "info": {"title": "Sub-route API", "version": "1.0.0"},
+        "components": {"schemas": {}},
+        "paths": {
+            "/filter-pipelines/{id}/versions/name/{version_name}": {
+                "get": {
+                    "operationId": "pipeline-version-get-by-name",
+                    "summary": "Get pipeline version by name",
+                    "parameters": [
+                        {"name": "id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "version_name", "in": "path", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+            "/projects/{project_id}/videos/upload/initiate": {
+                "post": {
+                    "operationId": "video-upload-initiate",
+                    "summary": "Initiate video upload",
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+            "/projects/{project_id}/videos/{video_id}/download": {
+                "get": {
+                    "operationId": "video-download-url",
+                    "summary": "Get video download URL",
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "video_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+            "/agents/pipeline-instance/status": {
+                "post": {
+                    "operationId": "pipeline-instance-status-webhook",
+                    "summary": "Pipeline instance status webhook",
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+            "/test-runs/{test_run_id}": {
+                "get": {
+                    # No operationId — forces path-based extraction
+                    "summary": "Get test run",
+                    "parameters": [
+                        {"name": "test_run_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                },
+            },
+        },
+    }
+
+    def test_by_name_collapses_to_parent(self):
+        """'by_name' sub-route should collapse to a real entity (version)."""
+        registry = EntityRegistry(self.SUB_ROUTE_SPEC)
+        entities = registry.list_entities()
+        assert "by_name" not in entities
+
+    def test_initiate_collapses_to_video(self):
+        """'initiate' action endpoint should collapse to video."""
+        registry = EntityRegistry(self.SUB_ROUTE_SPEC)
+        entities = registry.list_entities()
+        assert "initiate" not in entities
+
+    def test_url_collapses_to_video(self):
+        """'url' sub-route collapses — download URL goes under video."""
+        registry = EntityRegistry(self.SUB_ROUTE_SPEC)
+        entities = registry.list_entities()
+        assert "url" not in entities
+
+    def test_status_collapses_to_parent(self):
+        """'status' sub-route collapses into parent entity."""
+        registry = EntityRegistry(self.SUB_ROUTE_SPEC)
+        entities = registry.list_entities()
+        assert "status" not in entities
+        assert "statu" not in entities
+
+    def test_test_run_path_extraction(self):
+        """Path-based extraction for /test-runs/{id} yields 'test_run'."""
+        registry = EntityRegistry(self.SUB_ROUTE_SPEC)
+        entities = registry.list_entities()
+        assert "test_run" in entities
+
+
+class TestMeaningfulDescriptions:
+    """Tests that entity descriptions are built from operation summaries."""
+
+    def test_project_description_contains_summaries(self):
+        """Project description should include operation summaries, not generic text."""
+        registry = EntityRegistry(SAMPLE_OPENAPI_SPEC)
+        project = registry.get_entity("project")
+        assert project is not None
+        # Should NOT be the generic placeholder
+        assert project.description != "API operations for project"
+        # Should contain actual summaries
+        assert "List all projects" in project.description
+        assert "Create a project" in project.description
+
+    def test_sparse_spec_falls_back_to_generic(self):
+        """Entity with no summaries at all gets generic description."""
+        sparse = {
+            "openapi": "3.0.0",
+            "info": {"title": "Sparse", "version": "1.0.0"},
+            "components": {"schemas": {}},
+            "paths": {
+                "/things": {
+                    "get": {
+                        "operationId": "thing_list",
+                        # No summary at all
+                        "responses": {"200": {"description": "OK"}},
+                    },
+                },
+            },
+        }
+        registry = EntityRegistry(sparse)
+        thing = registry.get_entity("thing")
+        assert thing is not None
+        assert thing.description == "API operations for thing"
+
+    def test_description_in_search_results(self):
+        """Search results should show the meaningful description."""
+        registry = EntityRegistry(SAMPLE_OPENAPI_SPEC)
+        results = registry.list_entity_summaries()
+        project_entry = next(r for r in results if r["name"] == "project")
+        assert "List all projects" in project_entry["description"]
