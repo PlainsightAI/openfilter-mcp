@@ -13,11 +13,16 @@ Cross-tenant support: Plainsight employees (@plainsight.ai) can pass an optional
 parameter to access resources in other organizations.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+import inflect
+import tantivy
 
 import httpx
 import jsonschema
@@ -26,6 +31,8 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from openfilter_mcp.auth import get_auth_token, is_plainsight_employee
 
 logger = logging.getLogger(__name__)
+
+_inflect_engine = inflect.engine()
 
 
 @dataclass
@@ -65,6 +72,7 @@ class EntityRegistry:
         self.entities: dict[str, Entity] = {}
         self._component_schemas = openapi_spec.get("components", {}).get("schemas", {})
         self._parse_spec()
+        self._build_search_index()
 
     def _resolve_ref(self, schema: dict, seen: set[str] | None = None) -> dict:
         """Resolve $ref references in a schema, handling circular refs.
@@ -111,63 +119,128 @@ class EntityRegistry:
     # Standard CRUD actions - used to parse operation IDs
     CRUD_ACTIONS = {"list", "get", "create", "update", "delete"}
     # Common custom actions found in REST APIs
-    CUSTOM_ACTIONS = {"start", "stop", "cancel", "download", "upload", "validate", "run", "execute"}
+    # Note: 'run' is excluded because it appears as a noun in entity names
+    # (e.g., 'test-run', 'model-training-run') far more often than as a verb.
+    # 'webhook' is excluded for the same reason (e.g., 'agent-webhook-status').
+    CUSTOM_ACTIONS = {
+        "start", "stop", "cancel", "download", "upload", "validate",
+        "execute", "initiate", "restore", "export", "import", "ingest",
+        "clone", "archive", "publish", "activate", "deactivate",
+        "enable", "disable", "sync", "probe", "check",
+        "apply", "invite", "generate",
+    }
     ALL_ACTIONS = CRUD_ACTIONS | CUSTOM_ACTIONS
+    # Conjunctions that join compound actions (e.g., "create-and-execute")
+    _ACTION_CONNECTORS = {"and", "or"}
+
+    # Extracted names that indicate sub-routes, not real entities.
+    # If _extract_entity_name produces one of these, we walk up the path.
+    _NON_ENTITY_NAMES = {
+        "by_name", "by_number", "by_organization", "by_id", "by_email",
+        "url", "latest", "html", "error", "status", "compat", "report",
+        "initiate", "initiate_compat", "create_and_execute",
+        "get", "list", "restore", "name", "number",
+    }
+
+    @staticmethod
+    def _singularize(word: str) -> str:
+        """Singularize the last component of a compound name using inflect.
+
+        For compound names like ``model_training_run_purchases``, only the
+        last segment (``purchases``) is singularized.
+        """
+        word = word.replace("-", "_")
+        if "_" in word:
+            parts = word.split("_")
+            singular = _inflect_engine.singular_noun(parts[-1])
+            if singular:
+                parts[-1] = singular
+            return "_".join(parts)
+        singular = _inflect_engine.singular_noun(word)
+        if singular:
+            return singular
+        return word
+
+    def _entity_name_from_path(self, path: str) -> str | None:
+        """Extract entity name from URL path, walking up segments to skip sub-routes."""
+        clean_path = re.sub(r"\{[^}]+\}", "", path)
+        path_parts = [p for p in clean_path.split("/") if p]
+
+        # Walk from the end of the path toward the root, skipping non-entity segments
+        for segment in reversed(path_parts):
+            candidate = self._singularize(segment)
+            if candidate not in self._NON_ENTITY_NAMES and candidate not in self.ALL_ACTIONS:
+                return candidate
+
+        return None
 
     def _extract_entity_name(self, path: str, operation_id: str) -> str | None:
         """Extract entity name from path or operation_id.
 
-        This is dynamically driven - it looks for patterns like:
-            entity-action (e.g., project-list, training-cancel)
-            parent-action-entity (e.g., organization-get-subscription)
+        Two patterns are recognized in operation IDs:
 
-        Falls back to path-based extraction if operation_id doesn't match patterns.
+        1. **Action-first**: ``list-projects``, ``create-filter-subscription``
+           → first part is an action verb, the rest is the entity.
+        2. **Entity-first**: ``project-list``, ``test-run-get``,
+           ``pipeline-version-get-by-name``
+           → the *last* action verb separates entity (before) from modifiers
+           (after).
+
+        If the result is in ``_NON_ENTITY_NAMES`` (a known sub-route), falls
+        back to path-based extraction which walks segments from the end.
         """
-        # Try to extract from operation_id first (more reliable)
+        candidate = None
+
         if operation_id:
-            # Normalize: convert dashes to underscores for matching
             op_normalized = operation_id.replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find the action verb position
-            action_idx = None
-            for i, part in enumerate(parts):
-                if part in self.ALL_ACTIONS:
-                    action_idx = i
-                    break
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first: e.g., list_filter_subscriptions,
+                # create_model_training_run_purchase
+                # Skip compound action prefixes like "create-and-execute-..."
+                i = 1
+                while i < len(parts) and (
+                    parts[i] in self.ALL_ACTIONS or parts[i] in self._ACTION_CONNECTORS
+                ):
+                    i += 1
+                entity_parts = parts[i:]
+                if entity_parts:
+                    candidate = self._singularize("_".join(entity_parts))
+            else:
+                # Entity-first: find the *last* action verb; everything
+                # before it is the entity name.
+                action_idx = None
+                for i in range(len(parts) - 1, -1, -1):
+                    if parts[i] in self.ALL_ACTIONS:
+                        action_idx = i
+                        break
 
-            if action_idx is not None:
-                # If there's content after the action, that's the entity (compound case)
-                # e.g., organization_get_subscription -> subscription
-                if action_idx < len(parts) - 1:
-                    return "_".join(parts[action_idx + 1 :])
-                # Otherwise, content before the action is the entity
-                # e.g., project_list -> project
-                elif action_idx > 0:
-                    return "_".join(parts[:action_idx])
+                if action_idx is not None and action_idx > 0:
+                    entity_parts = list(parts[:action_idx])
+                    # Trim trailing compound action fragments
+                    # e.g., test-run-create-and-execute → ["test","run","create","and"]
+                    #   → trim "and", "create" → ["test","run"]
+                    while entity_parts and (
+                        entity_parts[-1] in self.ALL_ACTIONS
+                        or entity_parts[-1] in self._ACTION_CONNECTORS
+                    ):
+                        entity_parts.pop()
+                    if entity_parts:
+                        candidate = self._singularize("_".join(entity_parts))
+
+        # Validate the candidate — if it's a known sub-route pattern, fall back to path
+        if candidate and candidate not in self._NON_ENTITY_NAMES:
+            return candidate
 
         # Fall back to path-based extraction
-        # Remove path parameters and split
-        clean_path = re.sub(r"\{[^}]+\}", "", path)
-        path_parts = [p for p in clean_path.split("/") if p]
-
-        if path_parts:
-            # Take the last meaningful segment (the actual entity, not parent)
-            # For paths like /projects/{project_id}/videos, we want "video" not "project"
-            entity = path_parts[-1]
-            # Singularize if plural
-            if entity.endswith("ies"):
-                entity = entity[:-3] + "y"
-            elif entity.endswith("s") and not entity.endswith("ss"):
-                entity = entity[:-1]
-            return entity.replace("-", "_")
-
-        return None
+        return self._entity_name_from_path(path)
 
     def _classify_operation(self, method: str, path: str, operation_id: str) -> str | None:
         """Classify operation type from operation_id or HTTP method.
 
-        Dynamically extracts action from operation_id by finding known action verbs.
+        Uses the same action-first / entity-first strategy as _extract_entity_name:
+        if the first part is an action, use it; otherwise use the last action verb.
         Falls back to HTTP method heuristics.
         """
         method = method.upper()
@@ -177,8 +250,12 @@ class EntityRegistry:
             op_normalized = operation_id.lower().replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find any known action in the operation_id
-            for part in parts:
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first format: list_filters, create_filter_subscription
+                return parts[0]
+
+            # Entity-first format: find the last action verb
+            for part in reversed(parts):
                 if part in self.ALL_ACTIONS:
                     return part
 
@@ -296,11 +373,11 @@ class EntityRegistry:
                 if not op_type:
                     continue
 
-                # Create or get entity
+                # Create or get entity (description is built after all ops are collected)
                 if entity_name not in self.entities:
                     self.entities[entity_name] = Entity(
                         name=entity_name,
-                        description=f"API operations for {entity_name.replace('_', ' ')}",
+                        description="",  # placeholder — populated by _build_descriptions()
                     )
 
                 entity = self.entities[entity_name]
@@ -333,6 +410,22 @@ class EntityRegistry:
                 elif op_type == "get" and op.response_schema:
                     entity.response_schema = op.response_schema
 
+        # Now that all operations are collected, synthesize descriptions
+        self._build_descriptions()
+
+    def _build_descriptions(self):
+        """Build human-readable descriptions for each entity from its operation summaries."""
+        for entity in self.entities.values():
+            summaries = [
+                op.summary for op in entity.operations.values() if op.summary
+            ]
+            if summaries:
+                # Join unique summaries into a concise description
+                # e.g. "List all projects | Create a project | Get a project | ..."
+                entity.description = " | ".join(summaries)
+            else:
+                entity.description = f"API operations for {entity.name.replace('_', ' ')}"
+
     def get_entity(self, name: str) -> Entity | None:
         """Get entity by name."""
         return self.entities.get(name)
@@ -341,40 +434,134 @@ class EntityRegistry:
         """List all entity names."""
         return sorted(self.entities.keys())
 
-    def get_entity_info(self) -> dict[str, Any]:
-        """Get detailed info about all entities for discovery.
+    def _format_entity_info(self, entity: Entity) -> dict[str, Any]:
+        """Format detailed info for a single entity.
 
         Returns operation-level details including path templates and required parameters,
         giving callers the same information they would get from reading the raw OpenAPI spec.
         """
-        result = {}
-        for name, entity in sorted(self.entities.items()):
-            # Build detailed operation info
-            operations_detail = {}
-            for op_name, op in entity.operations.items():
-                op_info: dict[str, Any] = {
-                    "method": op.method,
-                    "path": op.path,
-                    "summary": op.summary,
-                }
-                # Only include path_params if there are any
-                if op.path_params:
-                    op_info["path_params"] = op.path_params
-                # Only include query_params if there are any
-                if op.query_params:
-                    op_info["query_params"] = {
-                        k: {"required": v["required"], "description": v.get("description", "")}
-                        for k, v in op.query_params.items()
-                    }
-                # Only include request_schema for operations that have request bodies
-                if op.request_schema:
-                    op_info["request_schema"] = op.request_schema
-                operations_detail[op_name] = op_info
-
-            result[name] = {
-                "description": entity.description,
-                "operations": operations_detail,
+        operations_detail = {}
+        for op_name, op in entity.operations.items():
+            op_info: dict[str, Any] = {
+                "method": op.method,
+                "path": op.path,
+                "summary": op.summary,
             }
+            # Only include path_params if there are any
+            if op.path_params:
+                op_info["path_params"] = op.path_params
+            # Only include query_params if there are any
+            if op.query_params:
+                op_info["query_params"] = {
+                    k: {"required": v["required"], "description": v.get("description", "")}
+                    for k, v in op.query_params.items()
+                }
+            # Only include request_schema for operations that have request bodies
+            if op.request_schema:
+                op_info["request_schema"] = op.request_schema
+            operations_detail[op_name] = op_info
+
+        return {
+            "description": entity.description,
+            "operations": operations_detail,
+        }
+
+    def get_entity_info(self) -> dict[str, Any]:
+        """Get detailed info about all entities for discovery."""
+        return {name: self._format_entity_info(entity) for name, entity in sorted(self.entities.items())}
+
+    def _build_entity_corpus(self, entity: Entity) -> str:
+        """Build a single searchable string from all fields of an entity."""
+        parts = [entity.name, entity.description]
+        for op in entity.operations.values():
+            parts.append(op.summary)
+            parts.append(op.path)
+            parts.append(op.operation_id)
+            for param_name in op.path_params:
+                parts.append(param_name)
+            for key, param in op.query_params.items():
+                parts.append(key)
+                desc = param.get("description", "")
+                if desc:
+                    parts.append(desc)
+        return " ".join(p for p in parts if p)
+
+    def _build_search_index(self):
+        """Build an in-memory tantivy search index over entity metadata."""
+        schema_builder = tantivy.SchemaBuilder()
+        schema_builder.add_text_field("entity_name", stored=True, tokenizer_name="raw")
+        schema_builder.add_text_field("corpus", stored=True, tokenizer_name="en_stem")
+        schema = schema_builder.build()
+        self._search_index = tantivy.Index(schema)
+
+        writer = self._search_index.writer()
+        for name, entity in self.entities.items():
+            corpus = self._build_entity_corpus(entity)
+            writer.add_document(tantivy.Document(
+                entity_name=[name],
+                corpus=[corpus],
+            ))
+        writer.commit()
+        self._search_index.reload()
+
+    @staticmethod
+    def _highlight_terms(text: str, terms: list[str]) -> str:
+        """Wrap occurrences of *terms* in markdown bold (case-insensitive)."""
+        for term in terms:
+            if not term:
+                continue
+            text = re.sub(
+                rf"(?i)({re.escape(term)})",
+                r"**\1**",
+                text,
+            )
+        return text
+
+    def list_entity_summaries(self, query: str | None = None) -> list[dict[str, Any]]:
+        """List entity summaries, optionally filtered by full-text search query.
+
+        When a query is provided, matching terms are highlighted inline in the
+        name and description fields using markdown bold (**term**).
+        """
+        if query is None:
+            return [
+                {"name": name, "description": entity.description}
+                for name, entity in sorted(self.entities.items())
+            ]
+
+        searcher = self._search_index.searcher()
+        parsed_query = self._search_index.parse_query(query, ["corpus"])
+        search_results = searcher.search(parsed_query, limit=len(self.entities))
+
+        # Extract raw query terms for inline highlighting
+        terms = query.split()
+
+        results = []
+        for _score, doc_address in search_results.hits:
+            doc = searcher.doc(doc_address)
+            entity_name = doc["entity_name"][0]
+            entity = self.entities[entity_name]
+            results.append({
+                "name": self._highlight_terms(entity_name, terms),
+                "description": self._highlight_terms(entity.description, terms),
+            })
+        return results
+
+    def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
+        """Get detailed info for specific entities by name."""
+        result = {}
+        available = None
+        for name in names:
+            entity = self.entities.get(name)
+            if entity:
+                result[name] = self._format_entity_info(entity)
+            else:
+                if available is None:
+                    available = self.list_entities()
+                result[name] = {
+                    "error": f"Unknown entity type: {name}",
+                    "available_entities": available,
+                }
         return result
 
 
@@ -789,6 +976,14 @@ class EntityToolsHandler:
         """Get all entity schemas for discovery."""
         return self.registry.get_entity_info()
 
+    def list_entity_summaries(self, query: str | None = None) -> list[dict[str, Any]]:
+        """List entity summaries, optionally filtered by search query."""
+        return self.registry.list_entity_summaries(query)
+
+    def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
+        """Get detailed info for specific entities by name."""
+        return self.registry.get_entity_info_for(names)
+
 
 def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
     """Register entity-based CRUD tools on an MCP server.
@@ -802,13 +997,45 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
     handler = EntityToolsHandler(client, registry)
 
     @mcp.tool()
-    def list_entity_types() -> dict[str, Any]:
-        """List all available API entity types and their operations.
+    def list_entity_types(query: str | None = None) -> list[dict[str, Any]]:
+        """List available API entity types, optionally filtered by search query.
 
-        Returns a dictionary of entity names to their available operations and schemas.
-        Use this to discover what entities exist and what you can do with them.
+        Returns lightweight summaries (name + description) for each entity type.
+        When a query is provided, results are filtered using full-text search
+        with English stemming and ranked by BM25 relevance. Matching terms are
+        highlighted inline with <b> tags in the name and description fields.
+
+        Use get_entity_type_info() to retrieve full operation metadata for
+        specific entity types.
+
+        Args:
+            query: Optional search query to filter entity types. Supports natural
+                   language search with stemming (e.g., "projects" matches "project").
+                   When omitted, returns all entity types sorted alphabetically.
+
+        Returns:
+            A list of dicts with 'name' and 'description'. When a query is
+            provided, matching terms are wrapped in markdown bold inline.
         """
-        return handler.get_entity_schemas()
+        return handler.list_entity_summaries(query)
+
+    @mcp.tool()
+    def get_entity_type_info(entity_names: list[str]) -> dict[str, Any]:
+        """Get full API metadata for specific entity types.
+
+        Returns detailed operation information including HTTP methods, URL paths,
+        path parameters, query parameters, and request schemas for the requested
+        entity types. Use list_entity_types() first to discover entity names.
+
+        Args:
+            entity_names: One or more entity type names to retrieve metadata for
+                         (e.g., ['project', 'organization']).
+
+        Returns:
+            A dictionary mapping entity names to their full operation metadata.
+            Unknown entity names will have an error entry with available entities listed.
+        """
+        return handler.get_entity_info_for(entity_names)
 
     # Cross-tenant org_id docstring fragment for reuse
     _ORG_ID_DOC = """org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
