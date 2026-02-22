@@ -169,42 +169,42 @@ The MCP server uses the same authentication as `psctl`. After running `psctl log
 ```
 </details>
 
-## Releasing
+## Development
 
-Releases are automated via [Google Cloud Build](cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants. Builds are dry-run by default (images built but not pushed) — the Terraform-managed trigger sets `_DRY_RUN=false` to enable pushing.
+Run `make help` to see all available targets:
 
-### Dev builds (testing)
-
-Dev tags push to Google Artifact Registry only (not Docker Hub).
-
-```bash
-# Full + slim build
-git tag v0.2.0-dev && git push origin v0.2.0-dev
-
-# Slim-only build (skips GPU indexing, much faster)
-git tag v0.2.0-slim-dev && git push origin v0.2.0-slim-dev
+```
+test                   Run tests
+build.slim             Build slim Docker image (no ML deps, ~370MB)
+build.full             Build full Docker image (requires indexes/)
+build.run.slim         Build and run slim image
+build.run.full         Build and run full image
+index                  Build code search indexes from source
+index.extract          Extract indexes from published amd64 image
+release.dev            Tag and push a dev build (full + slim → GAR)
+release.slim-dev       Tag and push a slim-only dev build (→ GAR)
+release.prod           Tag and push a production release (→ Docker Hub)
 ```
 
-Tags containing `slim` automatically skip the GPU index build and full image build. Both `v*-slim-dev` and `v*-dev-slim` are supported and normalize to the same image tags.
+## Releasing
+
+Releases are automated via [Google Cloud Build](cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants. Builds are dry-run by default — the Terraform-managed trigger sets `_DRY_RUN=false` to enable pushing.
+
+### Dev builds
+
+Dev tags push to Google Artifact Registry only (not Docker Hub). Tags containing `slim` automatically skip GPU indexing and the full image build.
+
+```bash
+make release.dev V=0.2.0        # full + slim → GAR
+make release.slim-dev V=0.2.0   # slim only → GAR (much faster)
+```
 
 ### Production releases
 
-Non-dev tags push to Docker Hub. The `latest` / `latest-slim` tags are automatically updated if the new version is >= the current latest (semver comparison).
+Non-dev tags push to Docker Hub. The `latest` / `latest-slim` tags are automatically updated if the new version is >= the current latest.
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-### Local testing
-
-The shared build script can be run locally (dry-run by default — builds but does not push):
-
-```bash
-# Build slim image locally
-docker build -f Dockerfile.slim -t openfilter-mcp:slim .
-
-# Test the full build script (requires Docker + buildx)
-bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
+make release.prod V=0.2.0
 ```
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
