@@ -47,7 +47,7 @@ llama-cpp-python = [
 ]
 
 [dependency-groups]
-code-search = ["code-context>=0.1.0"]
+code-search = ["code-context[ml]>=0.1.0"]
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.0.2",
