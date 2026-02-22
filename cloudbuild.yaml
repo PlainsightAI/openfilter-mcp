@@ -37,7 +37,7 @@ steps:
           --image=nvidia/cuda:12.4.0-devel-ubuntu22.04 \
           --command=bash \
           --set-env-vars=HF_TOKEN="$$HF_TOKEN" \
-          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
+          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv python install 3.11; uv sync --python 3.11; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
         gcloud run jobs execute index-builder --region=${_REGION} --wait
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
