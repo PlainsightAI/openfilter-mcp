@@ -7,6 +7,10 @@
 #     bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
 set -euo pipefail
 
+# Defaults for Cloud Build built-in variables (not set in manual `gcloud builds submit`)
+SHORT_SHA="${SHORT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo none)}"
+TAG_NAME="${TAG_NAME:-}"
+
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
