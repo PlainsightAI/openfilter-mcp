@@ -41,10 +41,6 @@ explicit = true
 
 [tool.uv.sources]
 code-context = { path = "./code-context" }
-llama-cpp-python = [
-    { git = "https://github.com/abetlen/llama-cpp-python", marker = "sys_platform == 'linux'" },
-    { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
-]
 
 [dependency-groups]
 code-search = ["code-context[ml]>=0.1.0"]
