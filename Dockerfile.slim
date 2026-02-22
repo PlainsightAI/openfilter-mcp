@@ -7,8 +7,10 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
-# Only copy code-context's pyproject.toml so uv can resolve the workspace source
-COPY code-context/pyproject.toml code-context/
+
+# Stub out code-context so uv can resolve the workspace source path,
+# but without its [tool.uv.sources] that trigger a slow git clone
+RUN mkdir -p code-context && printf '[project]\nname = "code-context"\nversion = "0.1.0"\nrequires-python = ">=3.10,<3.13"\ndependencies = []\n\n[build-system]\nrequires = ["uv_build>=0.9.6,<0.10.0"]\nbuild-backend = "uv_build"\n' > code-context/pyproject.toml
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
