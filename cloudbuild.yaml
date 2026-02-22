@@ -51,7 +51,7 @@ steps:
         tar xzf /workspace/idx.tar.gz -C /workspace/
 
         # Configure GAR auth for PR and dev builds
-        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev(-slim)?$$ ]] || [[ "${TAG_NAME}" =~ ^v.*-slim-dev$$ ]]; then
           gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
           ACCESS_TOKEN=$$(gcloud auth print-access-token)
           echo "$$ACCESS_TOKEN" > /workspace/.gar_token

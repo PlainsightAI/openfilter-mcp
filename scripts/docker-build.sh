@@ -47,7 +47,7 @@ fi
 # ---------------------------------------------------------------------------
 # Configure GAR auth (PR and dev builds)
 # ---------------------------------------------------------------------------
-if [[ -n "${_PR_NUMBER:-}" ]] || [[ "${TAG_NAME:-}" =~ ^v.*-dev$ ]]; then
+if [[ -n "${_PR_NUMBER:-}" ]] || [[ "${TAG_NAME:-}" =~ ^v.*-dev(-slim)?$ ]] || [[ "${TAG_NAME:-}" =~ ^v.*-slim-dev$ ]]; then
   # Prefer pre-generated token from Step #0; fall back to gcloud if available
   GAR_TOKEN=""
   if [[ -f /workspace/.gar_token ]]; then
@@ -85,10 +85,10 @@ if [[ -n "${_PR_NUMBER:-}" ]]; then
   echo "PR build #${_PR_NUMBER}: ${DOCKERFILE}"
   TAGS="-t ${_GAR_REPO}:pr-${_PR_NUMBER}${TAG_SUFFIX} -t ${_GAR_REPO}:${SHORT_SHA}${TAG_SUFFIX}"
 
-# --- Dev tag builds (v*-dev) → GAR only ---
-elif [[ "${TAG_NAME:-}" =~ ^v.*-dev$ ]]; then
-  DEV_VERSION=$(echo "${TAG_NAME}" | sed 's/^v//')
-  echo "Dev tag build: ${TAG_NAME} (${DOCKERFILE})"
+# --- Dev tag builds (v*-dev, v*-slim-dev, v*-dev-slim) → GAR only ---
+elif [[ "${TAG_NAME:-}" =~ ^v.*-dev(-slim)?$ ]] || [[ "${TAG_NAME:-}" =~ ^v.*-slim-dev$ ]]; then
+  DEV_VERSION=$(echo "${TAG_NAME}" | sed -e 's/^v//' -e 's/-slim//')
+  echo "Dev tag build: ${TAG_NAME} → ${DEV_VERSION} (${DOCKERFILE})"
   TAGS="-t ${_GAR_REPO}:${DEV_VERSION}${TAG_SUFFIX} -t ${_GAR_REPO}:${SHORT_SHA}${TAG_SUFFIX}"
 
 # --- Release / main builds → DockerHub ---
