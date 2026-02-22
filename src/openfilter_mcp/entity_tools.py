@@ -119,27 +119,43 @@ class EntityRegistry:
     # Standard CRUD actions - used to parse operation IDs
     CRUD_ACTIONS = {"list", "get", "create", "update", "delete"}
     # Common custom actions found in REST APIs
+    # Note: 'run' is excluded because it appears as a noun in entity names
+    # (e.g., 'test-run', 'model-training-run') far more often than as a verb.
+    # 'webhook' is excluded for the same reason (e.g., 'agent-webhook-status').
     CUSTOM_ACTIONS = {
-        "start", "stop", "cancel", "download", "upload", "validate", "run",
+        "start", "stop", "cancel", "download", "upload", "validate",
         "execute", "initiate", "restore", "export", "import", "ingest",
-        "webhook", "clone", "archive", "publish", "activate", "deactivate",
+        "clone", "archive", "publish", "activate", "deactivate",
         "enable", "disable", "sync", "probe", "check",
+        "apply", "invite", "generate",
     }
     ALL_ACTIONS = CRUD_ACTIONS | CUSTOM_ACTIONS
+    # Conjunctions that join compound actions (e.g., "create-and-execute")
+    _ACTION_CONNECTORS = {"and", "or"}
 
     # Extracted names that indicate sub-routes, not real entities.
     # If _extract_entity_name produces one of these, we walk up the path.
     _NON_ENTITY_NAMES = {
         "by_name", "by_number", "by_organization", "by_id", "by_email",
-        "url", "latest", "html", "error", "status", "compat",
+        "url", "latest", "html", "error", "status", "compat", "report",
         "initiate", "initiate_compat", "create_and_execute",
         "get", "list", "restore", "name", "number",
     }
 
     @staticmethod
     def _singularize(word: str) -> str:
-        """Singularize a word using inflect, with dash-to-underscore normalization."""
+        """Singularize the last component of a compound name using inflect.
+
+        For compound names like ``model_training_run_purchases``, only the
+        last segment (``purchases``) is singularized.
+        """
         word = word.replace("-", "_")
+        if "_" in word:
+            parts = word.split("_")
+            singular = _inflect_engine.singular_noun(parts[-1])
+            if singular:
+                parts[-1] = singular
+            return "_".join(parts)
         singular = _inflect_engine.singular_noun(word)
         if singular:
             return singular
@@ -161,32 +177,57 @@ class EntityRegistry:
     def _extract_entity_name(self, path: str, operation_id: str) -> str | None:
         """Extract entity name from path or operation_id.
 
-        Strategy:
-        1. Parse operation_id for {entity}_{action} or {parent}_{action}_{child} patterns.
-        2. If the result looks like a sub-route (in _NON_ENTITY_NAMES), fall back to path.
-        3. Path-based extraction walks segments from the end, skipping known non-entities.
+        Two patterns are recognized in operation IDs:
+
+        1. **Action-first**: ``list-projects``, ``create-filter-subscription``
+           → first part is an action verb, the rest is the entity.
+        2. **Entity-first**: ``project-list``, ``test-run-get``,
+           ``pipeline-version-get-by-name``
+           → the *last* action verb separates entity (before) from modifiers
+           (after).
+
+        If the result is in ``_NON_ENTITY_NAMES`` (a known sub-route), falls
+        back to path-based extraction which walks segments from the end.
         """
         candidate = None
 
-        # Try to extract from operation_id first (more reliable)
         if operation_id:
             op_normalized = operation_id.replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find the action verb position
-            action_idx = None
-            for i, part in enumerate(parts):
-                if part in self.ALL_ACTIONS:
-                    action_idx = i
-                    break
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first: e.g., list_filter_subscriptions,
+                # create_model_training_run_purchase
+                # Skip compound action prefixes like "create-and-execute-..."
+                i = 1
+                while i < len(parts) and (
+                    parts[i] in self.ALL_ACTIONS or parts[i] in self._ACTION_CONNECTORS
+                ):
+                    i += 1
+                entity_parts = parts[i:]
+                if entity_parts:
+                    candidate = self._singularize("_".join(entity_parts))
+            else:
+                # Entity-first: find the *last* action verb; everything
+                # before it is the entity name.
+                action_idx = None
+                for i in range(len(parts) - 1, -1, -1):
+                    if parts[i] in self.ALL_ACTIONS:
+                        action_idx = i
+                        break
 
-            if action_idx is not None:
-                if action_idx < len(parts) - 1:
-                    # Content after the action, e.g. organization_get_subscription -> subscription
-                    candidate = "_".join(parts[action_idx + 1 :])
-                elif action_idx > 0:
-                    # Content before the action, e.g. project_list -> project
-                    candidate = "_".join(parts[:action_idx])
+                if action_idx is not None and action_idx > 0:
+                    entity_parts = list(parts[:action_idx])
+                    # Trim trailing compound action fragments
+                    # e.g., test-run-create-and-execute → ["test","run","create","and"]
+                    #   → trim "and", "create" → ["test","run"]
+                    while entity_parts and (
+                        entity_parts[-1] in self.ALL_ACTIONS
+                        or entity_parts[-1] in self._ACTION_CONNECTORS
+                    ):
+                        entity_parts.pop()
+                    if entity_parts:
+                        candidate = self._singularize("_".join(entity_parts))
 
         # Validate the candidate — if it's a known sub-route pattern, fall back to path
         if candidate and candidate not in self._NON_ENTITY_NAMES:
@@ -198,7 +239,8 @@ class EntityRegistry:
     def _classify_operation(self, method: str, path: str, operation_id: str) -> str | None:
         """Classify operation type from operation_id or HTTP method.
 
-        Dynamically extracts action from operation_id by finding known action verbs.
+        Uses the same action-first / entity-first strategy as _extract_entity_name:
+        if the first part is an action, use it; otherwise use the last action verb.
         Falls back to HTTP method heuristics.
         """
         method = method.upper()
@@ -208,8 +250,12 @@ class EntityRegistry:
             op_normalized = operation_id.lower().replace("-", "_")
             parts = op_normalized.split("_")
 
-            # Find any known action in the operation_id
-            for part in parts:
+            if parts[0] in self.ALL_ACTIONS:
+                # Action-first format: list_filters, create_filter_subscription
+                return parts[0]
+
+            # Entity-first format: find the last action verb
+            for part in reversed(parts):
                 if part in self.ALL_ACTIONS:
                     return part
 
