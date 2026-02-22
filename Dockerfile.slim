@@ -7,10 +7,12 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
-COPY code-context/ code-context/
+# Only copy code-context's pyproject.toml so uv can resolve the source path
+COPY code-context/pyproject.toml code-context/
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
 RUN uv sync --no-dev
+RUN rm -rf code-context/
 
 CMD ["uv", "run", "--no-sync", "serve"]
