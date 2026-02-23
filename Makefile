@@ -2,9 +2,12 @@ DOCKERHUB_REPO := plainsightai/openfilter-mcp
 PLATFORMS      := linux/amd64,linux/arm64
 VERSION        := $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 SHA            := $(shell git rev-parse --short HEAD)
+GCP_PROJECT    := plainsightai-dev
+CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
 
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
         release.dev release.slim-dev release.prod \
+        cloud.slim cloud.full \
         index index.extract
 
 # ─── Help ─────────────────────────────────────────────────────────────────────
@@ -24,9 +27,11 @@ test: ## Run tests
 build.slim: ## Build slim Docker image (no ML deps, ~370MB)
 	docker build -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
 
-build.full: ## Build full Docker image (requires indexes/)
-	@test -d indexes || { echo "Error: indexes/ not found. Run 'make index' or 'make index.extract' first."; exit 1; }
+build.full: indexes ## Build full Docker image (with code search indexes)
 	docker build -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
+
+indexes: ## Ensure indexes exist (extract from published image if missing)
+	@test -d indexes || $(MAKE) index.extract
 
 build.run.slim: build.slim ## Build and run slim image
 	docker run --rm -p 3000:3000 $(DOCKERHUB_REPO):slim
@@ -46,6 +51,26 @@ index.extract: ## Extract indexes from published amd64 image
 	docker cp extract-tmp:/app/indexes/ ./
 	docker cp extract-tmp:/app/openfilter_repos_clones/ ./
 	docker rm extract-tmp
+
+# ─── Cloud Build (manual) ────────────────────────────────────────────────
+
+cloud.slim: ## Submit slim-only Cloud Build (V=0.0.0 for tag)
+	@test -n "$(V)" || { echo "Usage: make cloud.slim V=0.0.0"; exit 1; }
+	gcloud builds submit \
+		--config=cloudbuild.yaml \
+		--project=$(GCP_PROJECT) \
+		--service-account=projects/$(GCP_PROJECT)/serviceAccounts/$(CLOUDBUILD_SA) \
+		--substitutions=TAG_NAME=v$(V)-slim-dev,SHORT_SHA=$(SHA),_DRY_RUN=false,_GCS_BUCKET=$(GCP_PROJECT)-build-artifacts \
+		.
+
+cloud.full: ## Submit full Cloud Build (V=0.0.0 for tag)
+	@test -n "$(V)" || { echo "Usage: make cloud.full V=0.0.0"; exit 1; }
+	gcloud builds submit \
+		--config=cloudbuild.yaml \
+		--project=$(GCP_PROJECT) \
+		--service-account=projects/$(GCP_PROJECT)/serviceAccounts/$(CLOUDBUILD_SA) \
+		--substitutions=TAG_NAME=v$(V)-dev,SHORT_SHA=$(SHA),_DRY_RUN=false,_GCS_BUCKET=$(GCP_PROJECT)-build-artifacts \
+		.
 
 # ─── Release ──────────────────────────────────────────────────────────────────
 
