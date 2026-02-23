@@ -6,62 +6,52 @@ By leveraging semantic retrieval capabilities, any off-the-shelf LLM or VLM can 
 
 ## Tools
 
-The MCP server exposes two categories of tools:
+The server exposes a small, fixed set of tools — the tool count does not grow with the API.
 
-### Plainsight API Tools (Auto-generated)
+### Platform Tools
 
-All Plainsight API endpoints are automatically exposed as MCP tools via [FastMCP's OpenAPI integration][fastmcp-openapi]. This includes:
+Seven generic entity tools cover the entire Plainsight API. Entity types and their schemas are discovered at runtime from the [OpenAPI spec](https://api.prod.plainsight.tech/openapi.json), with two-tier discovery via full-text search (tantivy) so the agent can find relevant entities without loading hundreds of tool definitions into context.
 
-- **Projects & Organizations**: List, create, and manage projects
-- **Video Corpus**: Upload, list, and manage videos
-- **Filter Pipelines**: Configure and deploy filter pipelines
-- **Test Management**: Create tests with assertions and golden truth files
-- **Synthetic Video Generation**: Generate synthetic test videos via AI
-- **And more...**: All API endpoints documented in the [OpenAPI spec](https://api.prod.plainsight.tech/openapi.json)
+| Tool | Description |
+|------|-------------|
+| `list_entity_types` | Fuzzy-search available entity types by keyword |
+| `get_entity_type_info` | Get schemas, operations, and field details for specific entities |
+| `create_entity` | Create an entity (validated against the OpenAPI schema) |
+| `get_entity` | Get an entity by ID |
+| `list_entities` | List/filter entities with dynamic query parameters |
+| `update_entity` | Update an entity |
+| `delete_entity` | Delete an entity |
+| `entity_action` | Invoke non-CRUD actions (e.g., deploy, start, stop) |
 
-### Code Search Tools (Manual)
+### Code Search Tools (optional)
 
-These tools provide semantic code search capabilities on indexed repositories:
+Semantic search over indexed OpenFilter repositories. Only available in the full image (`latest`), not the slim variant.
 
-- `search`: Natural language search for code matching a description
-- `search_code`: Find code similar to a provided snippet
-- `get_chunk`: Retrieve a specific code chunk by ID
-- `read_file`: Read file contents from the indexed monorepo
-
-[fastmcp-openapi]: https://gofastmcp.com/integrations/openapi
+| Tool | Description |
+|------|-------------|
+| `search` | Natural language search for code matching a description |
+| `search_code` | Find code similar to a provided snippet |
+| `get_chunk` | Retrieve a specific code chunk by ID |
+| `read_file` | Read file contents from the indexed monorepo |
 
 This project uses [uv].
 
 ### Full install (with code search)
 
-Install dependencies including semantic search:
-
 ```bash
-uv sync --extra code-search
-```
-
-Preindex:
-
-```bash
+uv sync --group code-search
 uv run index
-```
-
-And finally, serve:
-
-```bash
 uv run serve
 ```
 
 ### Slim install (API tools only)
-
-For a lightweight install without semantic code search, embedding models, or ML dependencies:
 
 ```bash
 uv sync
 uv run serve
 ```
 
-The slim variant provides all Plainsight API tools (entity CRUD, polling, etc.) but omits code search tools (`search`, `search_code`, `get_chunk`, `read_file`).
+The slim variant provides all platform tools but omits code search.
 
 ## Docker
 
