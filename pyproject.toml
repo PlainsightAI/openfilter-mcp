@@ -21,8 +21,22 @@ build-backend = "uv_build"
 index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
+[[tool.uv.index]]
+name = "llama-cpp-python-metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama-cpp-python-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 code-context = { path = "./code-context" }
+llama-cpp-python = [
+    { index = "llama-cpp-python-cpu", marker = "sys_platform == 'linux'" },
+    { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
+]
 
 [dependency-groups]
 code-search = ["code-context[ml]>=0.1.0"]
