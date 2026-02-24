@@ -652,7 +652,7 @@ class EntityToolsHandler:
                 await ctx.info(f"Token renewal failed for '{token_name}': no token in API response.")
                 return None
 
-            register_sensitive(new_token, label="scoped-token")
+            stub = register_sensitive(new_token, label="scoped-token")
 
             # Update session state with the new token
             new_meta = {
@@ -665,7 +665,10 @@ class EntityToolsHandler:
             await ctx.set_state(SESSION_TOKEN_KEY, new_token)
             await ctx.set_state(SESSION_TOKEN_META_KEY, new_meta)
 
-            await ctx.info(f"Scoped token renewed successfully (new ID: {new_id}).")
+            await ctx.info(
+                f"Scoped token renewed (new ID: {new_id}). "
+                f"Log reference: {stub} — use this ID when reporting tool errors."
+            )
             return new_token
 
         except Exception:

@@ -49,6 +49,9 @@ def register_sensitive(value: str, label: str = "secret") -> str:
     digest = hashlib.sha256(value.encode()).hexdigest()[:8]
     stub = f"<REDACTED {label}:{digest}>"
     _sensitive[value] = stub
+    logging.getLogger(__name__).info(
+        "Registered %s — reference this ID in error reports: %s", label, stub
+    )
     return stub
 
 

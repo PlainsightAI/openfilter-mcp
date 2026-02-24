@@ -593,7 +593,7 @@ def create_mcp_server() -> FastMCP:
                 if not plaintext_token:
                     return {"error": "API did not return a token in the response."}
 
-                register_sensitive(plaintext_token, label="scoped-token")
+                stub = register_sensitive(plaintext_token, label="scoped-token")
 
                 # Store the token in session state — the LLM never sees this
                 await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
@@ -608,8 +608,8 @@ def create_mcp_server() -> FastMCP:
                 # Log the token to the user's UI (invisible to the LLM)
                 await ctx.info(
                     f"Scoped token activated (ID: {token_id}). "
-                    f"This token will be used automatically for subsequent API calls. "
-                    f"You can revoke it in the portal or via the API."
+                    f"Log reference: {stub} — use this ID when reporting tool errors. "
+                    f"This token will be used automatically for subsequent API calls."
                 )
 
                 logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
