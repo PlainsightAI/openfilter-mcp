@@ -1203,7 +1203,7 @@ class EntityToolsHandler:
         return self.registry.get_entity_info_for(names)
 
 
-def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) -> EntityRegistry:
+def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) -> tuple[EntityRegistry, "EntityToolsHandler"]:
     """Register entity-based CRUD tools on an MCP server.
 
     Args:
@@ -1212,7 +1212,9 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) ->
         openapi_spec: Parsed OpenAPI specification dict
 
     Returns:
-        The EntityRegistry built from the spec (useful for deriving valid scope resources).
+        Tuple of (EntityRegistry, EntityToolsHandler) — the registry is useful
+        for deriving valid scope resources; the handler provides _get_request_headers
+        for building auth headers with scoped token + expiry detection.
     """
     registry = EntityRegistry(openapi_spec)
     handler = EntityToolsHandler(client, registry)
@@ -1398,4 +1400,4 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) ->
         """
         return await handler.action(entity_type, action, id, data, path_params, org_id, ctx)
 
-    return registry
+    return registry, handler

@@ -356,10 +356,19 @@ class ApprovalSession:
         self._future = future
         self._server = server
         self._timeout = timeout
+        self._on_timeout: list[callable] = []
         # Start a background timeout that auto-resolves the future,
         # so callers using the non-blocking pattern (_future.done()) also
         # see timeout without needing to call wait().
         self._timeout_task = asyncio.create_task(self._auto_timeout())
+
+    def add_timeout_callback(self, callback: callable) -> None:
+        """Register a callback to invoke when the session times out.
+
+        Callbacks are called synchronously (not awaited) after the server
+        shuts down.  Useful for cleaning up external references to this session.
+        """
+        self._on_timeout.append(callback)
 
     async def _auto_timeout(self):
         """Resolve the future with "timeout" after the deadline."""
@@ -370,6 +379,11 @@ class ApprovalSession:
                 self._server.close()
                 await self._server.wait_closed()
                 logger.info("Approval server timed out and shut down")
+                for cb in self._on_timeout:
+                    try:
+                        cb()
+                    except Exception:
+                        logger.exception("Error in approval timeout callback")
         except asyncio.CancelledError:
             pass
 

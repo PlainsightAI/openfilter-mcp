@@ -336,8 +336,9 @@ def create_mcp_server() -> FastMCP:
 
     # Register entity-based CRUD tools if authenticated
     registry = None
+    entity_handler = None
     if has_auth and openapi_spec and client:
-        registry = register_entity_tools(mcp, client, openapi_spec)
+        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec)
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
@@ -440,37 +441,14 @@ def create_mcp_server() -> FastMCP:
             elapsed = 0
             last_value = None
 
-            # Build headers: prefer scoped token from session, fall back to cross-tenant
-            headers = {}
-            scoped_token = None
-            scoped_meta = None
-            if ctx:
-                try:
-                    scoped_token = await ctx.get_state(SESSION_TOKEN_KEY)
-                    scoped_meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
-                except Exception:
-                    pass
-
-            if not scoped_token and not ALLOW_UNSCOPED_TOKEN:
-                return {
-                    "error": "A scoped token is required for all API operations. "
-                    "Call request_scoped_token first. "
-                    "(Set OPF_MCP_ALLOW_UNSCOPED_TOKEN=true to bypass this check.)",
-                }
-
-            if scoped_token:
-                headers["Authorization"] = f"Bearer {scoped_token}"
-                if scoped_meta:
-                    scoped_org = scoped_meta.get("org_id")
-                    if scoped_org:
-                        headers["X-Scope-OrgID"] = scoped_org
-
-            if org_id:
-                token = get_auth_token()
-                if token and is_plainsight_employee(token):
-                    headers["X-Scope-OrgID"] = org_id
-                else:
-                    logger.warning("Cross-tenant access denied for poll_until_change: not a Plainsight employee")
+            # Build headers using the same logic as entity CRUD tools:
+            # scoped token with expiry detection, cross-tenant employee check.
+            if entity_handler:
+                headers = await entity_handler._get_request_headers(org_id, ctx)
+            else:
+                headers = None
+            if headers is None:
+                headers = {}
 
             while elapsed < timeout_seconds:
                 response = await client.get(endpoint, headers=headers if headers else None)
@@ -501,6 +479,78 @@ def create_mcp_server() -> FastMCP:
     # =========================================================================
     # Token Scoping Tools (available when authenticated)
     # =========================================================================
+
+    async def _create_and_activate_token(
+        ctx: Context,
+        http_client: httpx.AsyncClient,
+        name: str,
+        scope_list: list[str],
+        expires_at: datetime,
+        effective_org_id: str,
+    ) -> Dict[str, Any]:
+        """Create a scoped API token and activate it in session state.
+
+        Shared by request_scoped_token and await_token_approval to avoid
+        duplicating the POST /api-tokens → register → set_state → ctx.info flow.
+
+        Returns:
+            Success dict with status "active", or error dict on failure.
+        """
+        response = await http_client.post(
+            "/api-tokens",
+            json={
+                "name": name,
+                "scopes": scope_list,
+                "expires_at": expires_at.isoformat(),
+            },
+            headers={"X-Scope-OrgID": effective_org_id},
+        )
+
+        if response.status_code >= 400:
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            return {
+                "error": f"Failed to create scoped token: API returned {response.status_code}",
+                "details": error_body,
+            }
+
+        result = response.json()
+        plaintext_token = result.get("token")
+        token_id = result.get("id")
+
+        if not plaintext_token:
+            return {"error": "API did not return a token in the response."}
+
+        stub = register_sensitive(plaintext_token, label="scoped-token")
+
+        # Store the token in session state — the LLM never sees this
+        await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
+        await ctx.set_state(SESSION_TOKEN_META_KEY, {
+            "id": token_id,
+            "name": result.get("name", name),
+            "scopes": scope_list,
+            "expires_at": expires_at.isoformat(),
+            "org_id": effective_org_id,
+        })
+
+        # Log the token to the user's UI (invisible to the LLM)
+        await ctx.info(
+            f"Scoped token activated (ID: {token_id}). "
+            f"Log reference: {stub} — use this ID when reporting tool errors. "
+            f"This token will be used automatically for subsequent API calls."
+        )
+
+        logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
+
+        return {
+            "status": "active",
+            "message": "Scoped token created and activated for this session.",
+            "token_name": result.get("name", name),
+            "scopes": scope_list,
+            "expires_at": expires_at.isoformat(),
+        }
 
     # Pending web-based approvals: request_id -> {session, scope_list, name, ...}
     _pending_approvals: Dict[str, Any] = {}
@@ -623,6 +673,9 @@ def create_mcp_server() -> FastMCP:
                     "effective_org_id": effective_org_id,
                 }
 
+                # Clean up stale entry if the user never calls await_token_approval
+                session.add_timeout_callback(lambda rid=request_id: _pending_approvals.pop(rid, None))
+
                 # Return immediately — the agent must tell the user about the
                 # URL, then call await_token_approval to block on the result.
                 return {
@@ -647,63 +700,9 @@ def create_mcp_server() -> FastMCP:
 
             # Create the scoped token via the Plainsight API
             try:
-                response = await client.post(
-                    "/api-tokens",
-                    json={
-                        "name": name,
-                        "scopes": scope_list,
-                        "expires_at": expires_at.isoformat(),
-                    },
-                    headers={"X-Scope-OrgID": effective_org_id},
+                return await _create_and_activate_token(
+                    ctx, client, name, scope_list, expires_at, effective_org_id,
                 )
-
-                if response.status_code >= 400:
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        error_body = response.text
-                    return {
-                        "error": f"Failed to create scoped token: API returned {response.status_code}",
-                        "details": error_body,
-                    }
-
-                result = response.json()
-                plaintext_token = result.get("token")
-                token_id = result.get("id")
-
-                if not plaintext_token:
-                    return {"error": "API did not return a token in the response."}
-
-                stub = register_sensitive(plaintext_token, label="scoped-token")
-
-                # Store the token in session state — the LLM never sees this
-                await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
-                await ctx.set_state(SESSION_TOKEN_META_KEY, {
-                    "id": token_id,
-                    "name": result.get("name", name),
-                    "scopes": scope_list,
-                    "expires_at": expires_at.isoformat(),
-                    "org_id": effective_org_id,
-                })
-
-                # Log the token to the user's UI (invisible to the LLM)
-                await ctx.info(
-                    f"Scoped token activated (ID: {token_id}). "
-                    f"Log reference: {stub} — use this ID when reporting tool errors. "
-                    f"This token will be used automatically for subsequent API calls."
-                )
-
-                logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
-
-                # Return only metadata to the LLM — no token value
-                return {
-                    "status": "active",
-                    "message": "Scoped token created and activated for this session.",
-                    "token_name": result.get("name", name),
-                    "scopes": scope_list,
-                    "expires_at": expires_at.isoformat(),
-                }
-
             except Exception as e:
                 logger.error(f"Failed to create scoped token: {e}")
                 return {"error": f"Failed to create scoped token: {str(e)}"}
@@ -739,8 +738,8 @@ def create_mcp_server() -> FastMCP:
             # Block until the user responds or timeout
             result = await session.wait()
 
-            # Clean up pending state
-            del _pending_approvals[request_id]
+            # Clean up pending state (may already be removed by timeout callback)
+            _pending_approvals.pop(request_id, None)
 
             if result != "approve":
                 return {"status": "denied", "message": "User denied the token request (or it timed out)."}
@@ -752,60 +751,9 @@ def create_mcp_server() -> FastMCP:
             effective_org_id = pending["effective_org_id"]
 
             try:
-                response = await client.post(
-                    "/api-tokens",
-                    json={
-                        "name": name,
-                        "scopes": scope_list,
-                        "expires_at": expires_at.isoformat(),
-                    },
-                    headers={"X-Scope-OrgID": effective_org_id},
+                return await _create_and_activate_token(
+                    ctx, client, name, scope_list, expires_at, effective_org_id,
                 )
-
-                if response.status_code >= 400:
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        error_body = response.text
-                    return {
-                        "error": f"Failed to create scoped token: API returned {response.status_code}",
-                        "details": error_body,
-                    }
-
-                result_data = response.json()
-                plaintext_token = result_data.get("token")
-                token_id = result_data.get("id")
-
-                if not plaintext_token:
-                    return {"error": "API did not return a token in the response."}
-
-                stub = register_sensitive(plaintext_token, label="scoped-token")
-
-                await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
-                await ctx.set_state(SESSION_TOKEN_META_KEY, {
-                    "id": token_id,
-                    "name": result_data.get("name", name),
-                    "scopes": scope_list,
-                    "expires_at": expires_at.isoformat(),
-                    "org_id": effective_org_id,
-                })
-
-                await ctx.info(
-                    f"Scoped token activated (ID: {token_id}). "
-                    f"Log reference: {stub} — use this ID when reporting tool errors. "
-                    f"This token will be used automatically for subsequent API calls."
-                )
-
-                logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
-
-                return {
-                    "status": "active",
-                    "message": "Scoped token created and activated for this session.",
-                    "token_name": result_data.get("name", name),
-                    "scopes": scope_list,
-                    "expires_at": expires_at.isoformat(),
-                }
-
             except Exception as e:
                 logger.error(f"Failed to create scoped token: {e}")
                 return {"error": f"Failed to create scoped token: {str(e)}"}
