@@ -1141,13 +1141,16 @@ class EntityToolsHandler:
         return self.registry.get_entity_info_for(names)
 
 
-def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
+def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) -> EntityRegistry:
     """Register entity-based CRUD tools on an MCP server.
 
     Args:
         mcp: FastMCP server instance
         client: Authenticated httpx.AsyncClient
         openapi_spec: Parsed OpenAPI specification dict
+
+    Returns:
+        The EntityRegistry built from the spec (useful for deriving valid scope resources).
     """
     registry = EntityRegistry(openapi_spec)
     handler = EntityToolsHandler(client, registry)
@@ -1332,3 +1335,5 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
             Action result or an error.
         """
         return await handler.action(entity_type, action, id, data, path_params, org_id, ctx)
+
+    return registry

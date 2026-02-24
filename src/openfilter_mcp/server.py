@@ -292,7 +292,7 @@ Token scoping: The server starts with a default token that has full API access. 
 - Use `get_token_status` to check current permissions and expiry.
 - Use `clear_scoped_token` to revert to the default full-access token.
 
-Scope format: "resource:action" where action is read, create, update, delete, or * for all actions on that resource. Examples: "project:read,deployment:create", "filterpipeline:*,pipelineinstance:*".
+Scope format: "resource:action" where resource is any entity type (use `list_entity_types` to discover them) and action is read, create, update, delete, or * for all actions. Examples: "project:read,deployment:create", "filterpipeline:*,pipelineinstance:*".
 
 Always prefer narrowly scoped tokens for operations that modify or delete data.
 """.strip()
@@ -325,8 +325,9 @@ def create_mcp_server() -> FastMCP:
             pass
 
     # Register entity-based CRUD tools if authenticated
+    registry = None
     if has_auth and openapi_spec and client:
-        register_entity_tools(mcp, client, openapi_spec)
+        registry = register_entity_tools(mcp, client, openapi_spec)
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
@@ -505,13 +506,10 @@ def create_mcp_server() -> FastMCP:
 
             Args:
                 scopes: Comma-separated list of permission scopes to request.
-                    Format: "resource:action" where action is read, create, update, or delete.
+                    Format: "resource:action" where action is read, create, update, delete, or *.
                     Use "resource:*" for all actions on a resource.
-                    Available resources: project, organization, deployment, model, training,
-                    filter, filterpipeline, pipelineversion, pipelineinstance, sourceconfig,
-                    filterimage, filterregistry, filtersubscription, filtertopic,
-                    filterparameter, secret, syntheticvideo, videoupload, videorecording,
-                    videocorpus, artifact, agent, apitoken, user.
+                    Valid resources are derived from the API spec at startup — use
+                    list_entity_types to discover them.
                     Examples: "project:read,deployment:read,deployment:create",
                              "filterpipeline:*,pipelineinstance:*"
                 name: A name for this token (for identification in the portal).
@@ -529,10 +527,21 @@ def create_mcp_server() -> FastMCP:
             if not scope_list:
                 return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
 
-            scope_pattern = re.compile(r'^[a-z][a-z0-9_-]*:(read|create|update|delete|\*)$')
-            invalid = [s for s in scope_list if not scope_pattern.match(s)]
-            if invalid:
-                return {"error": f"Invalid scope format: {invalid}. Expected 'resource:action' where action is read, create, update, delete, or *."}
+            valid_actions = {"read", "create", "update", "delete", "*"}
+            valid_resources = set(registry.list_entities()) if registry else set()
+            errors = []
+            for s in scope_list:
+                parts = s.split(":", 1)
+                if len(parts) != 2:
+                    errors.append(f"{s} (expected 'resource:action')")
+                    continue
+                resource, action = parts
+                if action not in valid_actions:
+                    errors.append(f"{s} (unknown action '{action}', expected: {', '.join(sorted(valid_actions))})")
+                elif valid_resources and resource not in valid_resources:
+                    errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
+            if errors:
+                return {"error": f"Invalid scopes: {errors}"}
 
             if expires_in_hours < 1:
                 return {"error": "expires_in_hours must be at least 1."}
