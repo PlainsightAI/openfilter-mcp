@@ -200,17 +200,47 @@ class TestGetAuthToken:
 
     def test_returns_none_when_no_psctl_token(self):
         """Should return None when no psctl token available."""
-        with patch("openfilter_mcp.auth.read_psctl_token", return_value=None):
-            token = get_auth_token()
-            assert token is None
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENFILTER_TOKEN", None)
+            with patch("openfilter_mcp.auth.read_psctl_token", return_value=None):
+                token = get_auth_token()
+                assert token is None
 
     def test_returns_psctl_token(self):
         """Should return token from psctl config."""
-        with patch(
-            "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
-        ):
-            token = get_auth_token()
-            assert token == "psctl-token"
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENFILTER_TOKEN", None)
+            with patch(
+                "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
+            ):
+                token = get_auth_token()
+                assert token == "psctl-token"
+
+    def test_openfilter_token_env_takes_priority(self):
+        """OPENFILTER_TOKEN env var should take priority over psctl token."""
+        with patch.dict(os.environ, {"OPENFILTER_TOKEN": "scoped-api-token"}):
+            with patch(
+                "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
+            ) as mock_psctl:
+                token = get_auth_token()
+                assert token == "scoped-api-token"
+                mock_psctl.assert_not_called()
+
+    def test_openfilter_token_env_returned_when_set(self):
+        """Should return OPENFILTER_TOKEN when it is set, even without psctl token."""
+        with patch.dict(os.environ, {"OPENFILTER_TOKEN": "env-token"}):
+            with patch("openfilter_mcp.auth.read_psctl_token", return_value=None):
+                token = get_auth_token()
+                assert token == "env-token"
+
+    def test_empty_openfilter_token_falls_back_to_psctl(self):
+        """Empty OPENFILTER_TOKEN should fall back to psctl token."""
+        with patch.dict(os.environ, {"OPENFILTER_TOKEN": ""}):
+            with patch(
+                "openfilter_mcp.auth.read_psctl_token", return_value="psctl-token"
+            ):
+                token = get_auth_token()
+                assert token == "psctl-token"
 
 
 class TestGetApiClient:
