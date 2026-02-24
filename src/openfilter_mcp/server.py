@@ -294,7 +294,8 @@ How to scope a session:
 1. Determine which entity types and actions your task needs (use `list_entity_types` to discover available resources).
 2. Call `request_scoped_token` with a comma-separated list of "resource:action" scopes.
    - The user will be asked to approve via an interactive dialog or browser page.
-   - The tool blocks until the user responds, then returns the result.
+   - If the response includes an `approval_url`, tell the user to open it in their browser,
+     then call `await_token_approval` with the `request_id` to block until they respond.
 3. Once approved, the scoped token is stored in the session and used automatically for all subsequent API calls.
 4. Use `get_token_status` to check current permissions and expiry.
 5. Use `clear_scoped_token` to revert to the default token (e.g., to request different scopes).
@@ -501,6 +502,9 @@ def create_mcp_server() -> FastMCP:
     # Token Scoping Tools (available when authenticated)
     # =========================================================================
 
+    # Pending web-based approvals: request_id -> {session, scope_list, name, ...}
+    _pending_approvals: Dict[str, Any] = {}
+
     if has_auth and client:
 
         @mcp.tool()
@@ -517,8 +521,10 @@ def create_mcp_server() -> FastMCP:
             replacing the default full-access token for subsequent API calls.
             The user will be asked to approve the requested scopes via an
             interactive dialog (elicitation). If your MCP client does not support
-            elicitation, a temporary localhost web page will be opened for
-            approval instead. The tool blocks until the user responds.
+            elicitation, a browser-based approval page is started instead and
+            the tool returns immediately with an approval_url and request_id.
+            You MUST tell the user to open the URL, then call
+            await_token_approval with the request_id to block until they respond.
 
             You will NOT see the token value — it is stored securely in the
             session and used automatically for subsequent API calls.
@@ -606,14 +612,27 @@ def create_mcp_server() -> FastMCP:
                     },
                 )
 
-                # Inform the agent so it can tell the user about the approval URL
-                await ctx.info(
-                    f"Approval required. Ask the user to open this URL:\n\n  {session.url}"
-                )
+                # Store pending state so await_token_approval can finalize
+                import secrets
+                request_id = secrets.token_urlsafe(8)
+                _pending_approvals[request_id] = {
+                    "session": session,
+                    "scope_list": scope_list,
+                    "name": name,
+                    "expires_at": expires_at,
+                    "effective_org_id": effective_org_id,
+                }
 
-                # Block until the user responds in the browser or timeout
-                browser_result = await session.wait()
-                approved = browser_result == "approve"
+                # Return immediately — the agent must tell the user about the
+                # URL, then call await_token_approval to block on the result.
+                return {
+                    "status": "pending_approval",
+                    "approval_url": session.url,
+                    "request_id": request_id,
+                    "message": "Your MCP client does not support interactive approval. "
+                    "Tell the user to open the approval URL in their browser, then call "
+                    "await_token_approval with the request_id.",
+                }
 
             if not approved:
                 return {"status": "denied", "message": "User denied the token request."}
@@ -681,6 +700,108 @@ def create_mcp_server() -> FastMCP:
                     "status": "active",
                     "message": "Scoped token created and activated for this session.",
                     "token_name": result.get("name", name),
+                    "scopes": scope_list,
+                    "expires_at": expires_at.isoformat(),
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to create scoped token: {e}")
+                return {"error": f"Failed to create scoped token: {str(e)}"}
+
+        @mcp.tool()
+        async def await_token_approval(
+            request_id: str,
+            ctx: Context | None = None,
+        ) -> Dict[str, Any]:
+            """Wait for the user to approve or deny a pending token request.
+
+            Call this after request_scoped_token returns status "pending_approval".
+            This tool BLOCKS until the user clicks Approve or Deny in the browser
+            page, or the approval times out. Once approved, the scoped token is
+            created and activated automatically.
+
+            Args:
+                request_id: The request_id returned by request_scoped_token.
+
+            Returns:
+                Token status: "active" (approved and created), "denied", "timeout", or "error".
+            """
+            if not ctx:
+                return {"error": "This tool requires a session context."}
+
+            pending = _pending_approvals.get(request_id)
+            if not pending:
+                return {"error": f"No pending approval found for request_id '{request_id}'. "
+                        "It may have already been completed or expired."}
+
+            session = pending["session"]
+
+            # Block until the user responds or timeout
+            result = await session.wait()
+
+            # Clean up pending state
+            del _pending_approvals[request_id]
+
+            if result != "approve":
+                return {"status": "denied", "message": "User denied the token request (or it timed out)."}
+
+            # User approved — create the scoped token
+            scope_list = pending["scope_list"]
+            name = pending["name"]
+            expires_at = pending["expires_at"]
+            effective_org_id = pending["effective_org_id"]
+
+            try:
+                response = await client.post(
+                    "/api-tokens",
+                    json={
+                        "name": name,
+                        "scopes": scope_list,
+                        "expires_at": expires_at.isoformat(),
+                    },
+                    headers={"X-Scope-OrgID": effective_org_id},
+                )
+
+                if response.status_code >= 400:
+                    try:
+                        error_body = response.json()
+                    except Exception:
+                        error_body = response.text
+                    return {
+                        "error": f"Failed to create scoped token: API returned {response.status_code}",
+                        "details": error_body,
+                    }
+
+                result_data = response.json()
+                plaintext_token = result_data.get("token")
+                token_id = result_data.get("id")
+
+                if not plaintext_token:
+                    return {"error": "API did not return a token in the response."}
+
+                stub = register_sensitive(plaintext_token, label="scoped-token")
+
+                await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
+                await ctx.set_state(SESSION_TOKEN_META_KEY, {
+                    "id": token_id,
+                    "name": result_data.get("name", name),
+                    "scopes": scope_list,
+                    "expires_at": expires_at.isoformat(),
+                    "org_id": effective_org_id,
+                })
+
+                await ctx.info(
+                    f"Scoped token activated (ID: {token_id}). "
+                    f"Log reference: {stub} — use this ID when reporting tool errors. "
+                    f"This token will be used automatically for subsequent API calls."
+                )
+
+                logger.info(f"Scoped token created: id={token_id}, scopes={scope_list}")
+
+                return {
+                    "status": "active",
+                    "message": "Scoped token created and activated for this session.",
+                    "token_name": result_data.get("name", name),
                     "scopes": scope_list,
                     "expires_at": expires_at.isoformat(),
                 }
