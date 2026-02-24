@@ -23,6 +23,8 @@ import httpx
 import platformdirs
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 
+from openfilter_mcp.redact import register_sensitive
+
 logger = logging.getLogger(__name__)
 
 
@@ -315,6 +317,7 @@ async def refresh_and_get_new_token() -> Optional[str]:
     if _save_token_data(new_token_data):
         new_access_token = new_token_data.get("access_token")
         if new_access_token:
+            register_sensitive(new_access_token, label="refreshed-token")
             # Update cache with new token
             _cached_token = new_access_token
             expiry_str = new_token_data.get("expiry")
@@ -462,16 +465,26 @@ def create_token_verifier() -> DebugTokenVerifier:
 
 
 def get_auth_token() -> Optional[str]:
-    """Get the bearer token from psctl config.
+    """Get the bearer token for API authentication.
 
-    Reads token from psctl CLI config (~/.config/plainsight/token).
-    This allows users who have authenticated via `psctl login` to use the MCP
-    server without additional configuration.
+    Checks for a token in the following order:
+    1. OPENFILTER_TOKEN env var - Pre-scoped API token (e.g., from web portal).
+       Takes priority because it's an explicit operator choice for a scoped token
+       and enables Docker/CI deployments where no psctl token file exists.
+    2. psctl CLI config (~/.config/plainsight/token) - Token from `psctl login`.
+       This is the user's full-access token with automatic refresh support.
 
     Returns:
         The raw bearer token string, or None if not authenticated.
     """
-    return read_psctl_token()
+    env_token = os.getenv("OPENFILTER_TOKEN")
+    if env_token:
+        register_sensitive(env_token, label="env-token")
+        return env_token
+    token = read_psctl_token()
+    if token:
+        register_sensitive(token, label="psctl-token")
+    return token
 
 
 def get_api_client(timeout: float = 30.0) -> httpx.Client:
