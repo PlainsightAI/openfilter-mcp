@@ -23,6 +23,8 @@ import httpx
 import platformdirs
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 
+from openfilter_mcp.redact import register_sensitive
+
 logger = logging.getLogger(__name__)
 
 
@@ -315,6 +317,7 @@ async def refresh_and_get_new_token() -> Optional[str]:
     if _save_token_data(new_token_data):
         new_access_token = new_token_data.get("access_token")
         if new_access_token:
+            register_sensitive(new_access_token, label="refreshed-token")
             # Update cache with new token
             _cached_token = new_access_token
             expiry_str = new_token_data.get("expiry")
@@ -476,8 +479,12 @@ def get_auth_token() -> Optional[str]:
     """
     env_token = os.getenv("OPENFILTER_TOKEN")
     if env_token:
+        register_sensitive(env_token, label="env-token")
         return env_token
-    return read_psctl_token()
+    token = read_psctl_token()
+    if token:
+        register_sensitive(token, label="psctl-token")
+    return token
 
 
 def get_api_client(timeout: float = 30.0) -> httpx.Client:

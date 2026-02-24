@@ -36,6 +36,7 @@ from fastmcp.server.context import Context
 from fastmcp.server.elicitation import AcceptedElicitation
 
 from openfilter_mcp.auth import get_auth_token, is_plainsight_employee, read_psctl_token
+from openfilter_mcp.redact import register_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -651,6 +652,8 @@ class EntityToolsHandler:
                 await ctx.info(f"Token renewal failed for '{token_name}': no token in API response.")
                 return None
 
+            register_sensitive(new_token, label="scoped-token")
+
             # Update session state with the new token
             new_meta = {
                 "id": new_id,
@@ -665,8 +668,8 @@ class EntityToolsHandler:
             await ctx.info(f"Scoped token renewed successfully (new ID: {new_id}).")
             return new_token
 
-        except Exception as e:
-            logger.error("Error during scoped token renewal for '%s': %s", token_name, e)
+        except Exception:
+            logger.exception("Error during scoped token renewal for '%s'", token_name)
             return None
 
     def _validate_schema(self, data: dict, schema: dict | None, context: str) -> list[str]:

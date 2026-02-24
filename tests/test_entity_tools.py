@@ -870,7 +870,7 @@ class TestScopedTokenHeaders:
         which won't work on a ps_ API token. So we always check the original JWT.
         """
         with (
-            patch("openfilter_mcp.entity_tools.get_auth_token", return_value="original-jwt-token"),
+            patch("openfilter_mcp.entity_tools.read_psctl_token", return_value="original-jwt-token"),
             patch("openfilter_mcp.entity_tools.is_plainsight_employee", return_value=True) as mock_employee,
         ):
             headers = await handler._get_request_headers(
@@ -881,7 +881,7 @@ class TestScopedTokenHeaders:
         assert headers["Authorization"] == "Bearer ps_scoped_test_token_123"
         # The explicit org_id should override the scoped token's org_id
         assert headers["X-Scope-OrgID"] == "cross-tenant-org-999"
-        # is_plainsight_employee should have been called with the ORIGINAL JWT, not the scoped token
+        # is_plainsight_employee should have been called with the psctl JWT, not the scoped token
         mock_employee.assert_called_once_with("original-jwt-token")
 
     @pytest.mark.asyncio
@@ -1414,8 +1414,13 @@ class TestExpiredTokenHandling:
         ctx.info.assert_called()  # Should inform user of failure
 
     @pytest.mark.asyncio
-    async def test_recreate_expired_token_exception_no_token_leak(self, handler, mock_client):
-        """Exception in _recreate_expired_token uses logger.error, not logger.exception."""
+    async def test_recreate_expired_token_exception_logged(self, handler, mock_client):
+        """Exception in _recreate_expired_token is logged with full traceback.
+
+        Token values are safe in tracebacks because the RedactingFilter
+        (installed on the package logger) scrubs all registered sensitive
+        values before they reach any log handler.
+        """
         ctx = AsyncMock()
         ctx.elicit = AsyncMock()
         from fastmcp.server.elicitation import AcceptedElicitation
@@ -1437,6 +1442,6 @@ class TestExpiredTokenHandling:
             result = await handler._recreate_expired_token(scoped_meta, ctx)
 
         assert result is None
-        # Should use logger.error (not logger.exception) to avoid stack trace with token
-        mock_logger.error.assert_called()
-        mock_logger.exception.assert_not_called()
+        # logger.exception is safe because RedactingFilter scrubs token values
+        mock_logger.exception.assert_called_once()
+        assert "test-token" in mock_logger.exception.call_args[0][1]

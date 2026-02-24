@@ -53,6 +53,7 @@ from openfilter_mcp.auth import (
     TokenRefreshTransport,
 )
 from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY, SESSION_TOKEN_META_KEY
+from openfilter_mcp.redact import register_sensitive
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
 logger = logging.getLogger(__name__)
@@ -591,6 +592,8 @@ def create_mcp_server() -> FastMCP:
 
                 if not plaintext_token:
                     return {"error": "API did not return a token in the response."}
+
+                register_sensitive(plaintext_token, label="scoped-token")
 
                 # Store the token in session state — the LLM never sees this
                 await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
