@@ -77,7 +77,12 @@ def _make_mock_client() -> AsyncMock:
 
 @pytest.fixture
 def mcp_server() -> FastMCP:
-    """Create a FastMCP server with mocked auth, OpenAPI, and HTTP client."""
+    """Create a FastMCP server with mocked auth, OpenAPI, and HTTP client.
+
+    Patches must remain active through the entire test so that tool calls
+    at runtime (e.g. read_psctl_token, get_effective_org_id) still resolve
+    to mocked values rather than hitting real auth.
+    """
     with (
         patch("openfilter_mcp.server.get_auth_token", return_value="test-token"),
         patch("openfilter_mcp.server.get_openapi_spec", return_value=_MOCK_SPEC),
@@ -92,7 +97,7 @@ def mcp_server() -> FastMCP:
         from openfilter_mcp.server import create_mcp_server
 
         server = create_mcp_server()
-    return server
+        yield server
 
 
 # ---------------------------------------------------------------------------
