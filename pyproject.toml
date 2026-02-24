@@ -3,7 +3,6 @@ name = "openfilter-mcp"
 version = "0.1.0"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "code-context>=0.1.0",
     "fastmcp>=2.13.1",
     "gitpython>=3.1.45",
     "httpx>=0.28.1",
@@ -22,14 +21,6 @@ build-backend = "uv_build"
 index = "openfilter_mcp.preindex_repos:preindex_openfilter_repos"
 serve = "openfilter_mcp.server:main"
 
-[tool.uv]
-config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
-
-[[tool.uv.index]]
-name = "llama-cpp-python-cuda"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
-explicit = true
-
 [[tool.uv.index]]
 name = "llama-cpp-python-metal"
 url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
@@ -43,7 +34,7 @@ explicit = true
 [tool.uv.sources]
 code-context = { path = "./code-context" }
 llama-cpp-python = [
-    { git = "https://github.com/abetlen/llama-cpp-python", marker = "sys_platform == 'linux'" },
+    { index = "llama-cpp-python-cpu", marker = "sys_platform == 'linux'" },
     { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
 ]
 
@@ -51,6 +42,7 @@ llama-cpp-python = [
 markers = ["e2e: end-to-end tests requiring Playwright/browser"]
 
 [dependency-groups]
+code-search = ["code-context[ml]>=0.1.0"]
 dev = [
     "httpx>=0.28.1",
     "playwright>=1.58.0",

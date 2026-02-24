@@ -25,7 +25,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --group dev --no-install-package code-context --no-install-package llama-cpp-python
+        run: uv sync --group dev
 
       - name: Install Playwright browsers
         run: uv run --no-sync playwright install --with-deps chromium

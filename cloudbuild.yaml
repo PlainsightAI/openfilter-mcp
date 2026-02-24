@@ -1,11 +1,14 @@
 # Docker build with GPU-accelerated index building via Cloud Run Jobs
-# Triggers: push to main, tag v*, PR to main
+# Triggers (configured in infrastructure/terraform/gcp/artifacts/cloudbuild-triggers.tf):
+#   PR builds       → GAR oci registry (ephemeral, for review)
+#   Dev tag (v*-dev) → GAR oci registry (dev testing, no DockerHub)
+#   Release tag (v*) → DockerHub (production, latest if semver >= current)
 #
-# PR builds → GAR oci registry (dev testing, no DockerHub)
-# Dev tag builds (v*-dev) → GAR oci registry (dev testing, no DockerHub)
-# Main/tag builds → DockerHub (production)
+# Dry-run by default — set _DRY_RUN=false in the Terraform trigger to actually push.
 
 substitutions:
+  _DRY_RUN: 'true'  # Terraform trigger overrides to "false" for automated runs
+  _SLIM_ONLY: 'false'  # Set to "true" to skip GPU indexing and full build
   _DOCKERHUB_REPO: plainsightai/openfilter-mcp
   _GAR_REPO: us-west1-docker.pkg.dev/plainsightai-dev/oci/openfilter-mcp
   _GCS_BUCKET: ${PROJECT_ID}-build-artifacts
@@ -22,7 +25,7 @@ availableSecrets:
       env: 'HF_TOKEN'
 
 steps:
-  # Upload source, run GPU job, download index
+  # Step 1: Upload source, run GPU job, download index
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     secretEnv: ['HF_TOKEN']
@@ -30,6 +33,10 @@ steps:
       - '-c'
       - |
         set -e
+        # Auto-detect slim-only from tag name (e.g. v1.0.0-slim-dev)
+        SLIM_ONLY="${_SLIM_ONLY}"
+        if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
+        if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping index build"; exit 0; fi
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
 
@@ -37,146 +44,47 @@ steps:
           --image=nvidia/cuda:12.4.0-devel-ubuntu22.04 \
           --command=bash \
           --set-env-vars=HF_TOKEN="$$HF_TOKEN" \
-          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv sync; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
+          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv python install 3.11; uv sync --python 3.11 --group code-search; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
         gcloud run jobs execute index-builder --region=${_REGION} --wait
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
         tar xzf /workspace/idx.tar.gz -C /workspace/
 
         # Configure GAR auth for PR and dev builds
-        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
-          # Get access token and save it for the docker step
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev(-slim)?$$ ]] || [[ "${TAG_NAME}" =~ ^v.*-slim-dev$$ ]]; then
           gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
           ACCESS_TOKEN=$$(gcloud auth print-access-token)
           echo "$$ACCESS_TOKEN" > /workspace/.gar_token
         fi
 
-  # Docker build and push
+  # Step 2: Full Docker build (GPU image with code-context + indexes)
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
+    env: &docker-env
+      - 'DRY_RUN=${_DRY_RUN}'
+      - 'TAG_NAME=${TAG_NAME}'
+      - 'SHORT_SHA=${SHORT_SHA}'
+      - '_PR_NUMBER=${_PR_NUMBER}'
+      - '_GAR_REPO=${_GAR_REPO}'
+      - '_DOCKERHUB_REPO=${_DOCKERHUB_REPO}'
     args:
       - '-c'
       - |
-        # Set up QEMU for multiplatform builds
-        docker run --privileged multiarch/qemu-user-static --reset -p yes
+        SLIM_ONLY="${_SLIM_ONLY}"; if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
+        if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping full build"; exit 0; fi
+        bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest"
 
-        # Configure GAR auth if this is a PR or dev build
-        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
-          # Create docker config with credentials stored directly (not via credential helper)
-          # This is needed because the buildx container doesn't have docker-credential-gcloud
-          if [[ -f /workspace/.gar_token ]]; then
-            GAR_TOKEN=$$(cat /workspace/.gar_token)
-            # Use the auth format that docker expects (base64 encoded username:password)
-            AUTH_B64=$$(echo -n "oauth2accesstoken:$$GAR_TOKEN" | base64 -w0)
-            mkdir -p /builder/home/.docker
-            # Create config.json with the auth entry using printf to avoid YAML issues
-            printf '{\n  "auths": {\n    "us-west1-docker.pkg.dev": {\n      "auth": "%s"\n    }\n  }\n}\n' "$$AUTH_B64" > /builder/home/.docker/config.json
-            echo "GAR auth configured for us-west1-docker.pkg.dev"
-            cat /builder/home/.docker/config.json
-          fi
-        fi
+  # Step 3: Slim Docker build (no code-context, no indexes, no ML deps)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
+    env: *docker-env
+    args:
+      - '-c'
+      - bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
 
-        # Create Dockerfile
-        cat > Dockerfile.gpu << 'EOF'
-        FROM python:3.12-slim
-        COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
-        RUN apt-get update && apt-get install -y git curl gcc g++ && rm -rf /var/lib/apt/lists/*
-        WORKDIR /app
-        COPY pyproject.toml README.md ./
-        COPY src/ src/
-        COPY code-context/ code-context/
-        COPY indexes/ indexes/
-        COPY openfilter_repos_clones/ openfilter_repos_clones/
-        ENV CMAKE_ARGS="-DGGML_CUDA=off"
-        RUN uv sync --locked || uv sync
-        CMD ["uv", "run", "python", "-m", "openfilter_mcp.server"]
-        EOF
-
-        # Create buildx builder with docker-container driver for multiplatform support
-        # Pass the docker config to buildkit via environment variable
-        docker buildx rm multiarch-builder 2>/dev/null || true
-        DOCKER_CONFIG=/builder/home/.docker docker buildx create --name multiarch-builder \
-          --driver docker-container \
-          --use
-        docker buildx inspect --bootstrap
-
-        # PR builds → GAR only (no DockerHub, no latest tag)
-        if [[ -n "${_PR_NUMBER}" ]]; then
-          echo "PR build #${_PR_NUMBER}: pushing to GAR oci"
-          # Set DOCKER_CONFIG for buildx to find credentials
-          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -t ${_GAR_REPO}:pr-${_PR_NUMBER} \
-            -t ${_GAR_REPO}:${SHORT_SHA} \
-            --push \
-            -f Dockerfile.gpu .
-          exit 0
-        fi
-
-        # Dev tag builds (v*-dev) → GAR only
-        if [[ "${TAG_NAME}" =~ ^v.*-dev$$ ]]; then
-          echo "Dev tag build: ${TAG_NAME} → pushing to GAR oci"
-          # Extract version without v prefix using sed
-          DEV_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
-          echo "TAG_NAME=${TAG_NAME}, DEV_VERSION=$$DEV_VERSION"
-          # Set DOCKER_CONFIG for buildx to find credentials
-          DOCKER_CONFIG=/builder/home/.docker docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -t ${_GAR_REPO}:$$DEV_VERSION \
-            -t ${_GAR_REPO}:${SHORT_SHA} \
-            --push \
-            -f Dockerfile.gpu .
-          exit 0
-        fi
-
-        # Main/tag builds → DockerHub
-        echo "$$DOCKERHUB_TOKEN" | docker login -u "$$DOCKERHUB_USERNAME" --password-stdin
-
-        # Only add 'latest' tag for version tags (v*) if newer than current latest
-        if [[ "${TAG_NAME}" =~ ^v ]]; then
-          echo "Version tag build: ${TAG_NAME}"
-          NEW_VERSION=$$(echo "${TAG_NAME}" | sed 's/^v//')
-
-          # Fetch current latest version from DockerHub by finding which semver tag shares latest's digest
-          LATEST_DIGEST=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/latest" | \
-            jq -r '.images[0].digest // empty')
-
-          if [[ -n "$$LATEST_DIGEST" ]]; then
-            # Find the v* tag that matches this digest
-            CURRENT_VERSION=$$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
-              jq -r --arg digest "$$LATEST_DIGEST" \
-              '.results[] | select(.images[].digest == $$digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))' | \
-              sed 's/^v//' | head -1)
-          fi
-          CURRENT_VERSION="$${CURRENT_VERSION:-0.0.0}"
-          echo "Current latest version: $$CURRENT_VERSION, New version: $$NEW_VERSION"
-
-          # Compare versions (semver): returns 0 if $$1 >= $$2
-          version_gte() {
-            [ "$$(printf '%s\n' "$$1" "$$2" | sort -V | tail -n1)" = "$$1" ]
-          }
-
-          if version_gte "$$NEW_VERSION" "$$CURRENT_VERSION"; then
-            echo "New version $$NEW_VERSION >= current $$CURRENT_VERSION, tagging as latest"
-            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:latest -t ${_DOCKERHUB_REPO}:$$NEW_VERSION"
-          else
-            echo "New version $$NEW_VERSION < current $$CURRENT_VERSION, skipping latest tag"
-            _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA} -t ${_DOCKERHUB_REPO}:$$NEW_VERSION"
-          fi
-        else
-          echo "Main branch build: SHA ${SHORT_SHA}"
-          _TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}"
-        fi
-        echo "Building with tags: $$_TAGS"
-
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          $$_TAGS \
-          --push \
-          -f Dockerfile.gpu .
-
-  # Cleanup
+  # Step 4: Cleanup build artifacts from GCS
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     args: ['bash', '-c', 'gsutil -m rm -r gs://${_GCS_BUCKET}/builds/${BUILD_ID}/ || true']
 

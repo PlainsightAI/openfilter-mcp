@@ -1,0 +1,30 @@
+FROM python:3.12-slim
+COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
+
+RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src/ src/
+
+# Stub out code-context so uv can resolve the workspace source path,
+# but without its [tool.uv.sources] that trigger a slow git clone
+RUN mkdir -p code-context && cat > code-context/pyproject.toml <<'STUB'
+[project]
+name = "code-context"
+version = "0.1.0"
+requires-python = ">=3.10,<3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
+STUB
+
+# Slim build: no code-context, no code search indexes, no ML dependencies
+ENV ENABLE_CODE_SEARCH=false
+RUN uv sync --no-dev
+RUN rm -rf code-context/
+
+CMD ["uv", "run", "--no-sync", "serve"]

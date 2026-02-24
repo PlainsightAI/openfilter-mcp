@@ -1,9 +1,12 @@
+import sys
+
 import httpx
 import jq # Assuming python-jq library
 import os
 import time
 import git
 import shutil
+
 try:
     from code_context.indexing import index_repository_direct
 except ImportError:
@@ -18,8 +21,8 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
     using code_context's core indexing function.
     """
     if index_repository_direct is None:
-        print("Error: code-context is not installed. Install with: uv sync --extra code-search")
-        return
+        print("Error: code-context is not installed. Install with: uv sync --group code-search")
+        sys.exit(1)
 
     print(f"Fetching repositories for organization: {org_name}")
     headers = {"Accept": "application/vnd.github.v3+json"}
