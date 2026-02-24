@@ -52,14 +52,12 @@ from openfilter_mcp.auth import (
     AuthenticationError,
     TokenRefreshTransport,
 )
-from openfilter_mcp.entity_tools import register_entity_tools
+from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY, SESSION_TOKEN_META_KEY
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
 logger = logging.getLogger(__name__)
 
-# Session state key for the scoped API token
-_SESSION_TOKEN_KEY = "scoped_api_token"
-_SESSION_TOKEN_META_KEY = "scoped_api_token_meta"
+# Session state keys are imported from entity_tools for consistency
 
 
 # =============================================================================
@@ -403,6 +401,7 @@ def create_mcp_server() -> FastMCP:
             poll_interval_seconds: int = 5,
             timeout_seconds: int = 600,
             org_id: str | None = None,
+            ctx: Context | None = None,
         ) -> Dict[str, Any]:
             """Poll an API endpoint until a field reaches one of the target values.
 
@@ -428,10 +427,34 @@ def create_mcp_server() -> FastMCP:
             targets = [v.strip() for v in target_values.split(",")]
             elapsed = 0
             last_value = None
-            headers = _get_cross_tenant_headers(org_id)
+
+            # Build headers: prefer scoped token from session, fall back to cross-tenant
+            headers = {}
+            scoped_token = None
+            scoped_meta = None
+            if ctx:
+                try:
+                    scoped_token = await ctx.get_state(SESSION_TOKEN_KEY)
+                    scoped_meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
+                except Exception:
+                    pass
+
+            if scoped_token:
+                headers["Authorization"] = f"Bearer {scoped_token}"
+                if scoped_meta:
+                    scoped_org = scoped_meta.get("org_id")
+                    if scoped_org:
+                        headers["X-Scope-OrgID"] = scoped_org
+
+            if org_id:
+                token = get_auth_token()
+                if token and is_plainsight_employee(token):
+                    headers["X-Scope-OrgID"] = org_id
+                else:
+                    logger.warning("Cross-tenant access denied for poll_until_change: not a Plainsight employee")
 
             while elapsed < timeout_seconds:
-                response = await client.get(endpoint, headers=headers)
+                response = await client.get(endpoint, headers=headers if headers else None)
                 response.raise_for_status()
                 data = response.json()
 
@@ -467,7 +490,8 @@ def create_mcp_server() -> FastMCP:
             scopes: str,
             name: str = "openfilter-mcp-agent",
             expires_in_hours: int = 1,
-            ctx: Context = None,
+            org_id: str | None = None,
+            ctx: Context | None = None,
         ) -> Dict[str, Any]:
             """Request a scoped API token with limited permissions for this session.
 
@@ -491,6 +515,8 @@ def create_mcp_server() -> FastMCP:
                              "filterpipeline:*,pipelineinstance:*"
                 name: A name for this token (for identification in the portal).
                 expires_in_hours: How long the token should be valid (default: 1 hour).
+                org_id: Optional organization ID to create the token for. If not provided,
+                    the org ID is derived from the current psctl/auth token.
 
             Returns:
                 Confirmation of which scopes were granted (token value is hidden).
@@ -502,7 +528,7 @@ def create_mcp_server() -> FastMCP:
             if not scope_list:
                 return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
 
-            scope_pattern = re.compile(r'^[a-z]+:(read|create|update|delete|\*)$')
+            scope_pattern = re.compile(r'^[a-z][a-z0-9_-]*:(read|create|update|delete|\*)$')
             invalid = [s for s in scope_list if not scope_pattern.match(s)]
             if invalid:
                 return {"error": f"Invalid scope format: {invalid}. Expected 'resource:action' where action is read, create, update, delete, or *."}
@@ -529,10 +555,12 @@ def create_mcp_server() -> FastMCP:
             if not isinstance(approval, AcceptedElicitation) or approval.data != "Approve":
                 return {"status": "denied", "message": "User denied the token request."}
 
-            # Get the user's org ID from the current token
-            token = read_psctl_token() or get_auth_token()
-            org_id = get_effective_org_id(token)
-            if not org_id:
+            # Get the effective org ID
+            effective_org_id = org_id
+            if not effective_org_id:
+                token = read_psctl_token() or get_auth_token()
+                effective_org_id = get_effective_org_id(token)
+            if not effective_org_id:
                 return {"error": "Cannot determine organization ID from current token."}
 
             # Create the scoped token via the Plainsight API
@@ -544,7 +572,7 @@ def create_mcp_server() -> FastMCP:
                         "scopes": scope_list,
                         "expires_at": expires_at.isoformat(),
                     },
-                    headers={"X-Scope-OrgID": org_id},
+                    headers={"X-Scope-OrgID": effective_org_id},
                 )
 
                 if response.status_code >= 400:
@@ -565,13 +593,13 @@ def create_mcp_server() -> FastMCP:
                     return {"error": "API did not return a token in the response."}
 
                 # Store the token in session state — the LLM never sees this
-                await ctx.set_state(_SESSION_TOKEN_KEY, plaintext_token)
-                await ctx.set_state(_SESSION_TOKEN_META_KEY, {
+                await ctx.set_state(SESSION_TOKEN_KEY, plaintext_token)
+                await ctx.set_state(SESSION_TOKEN_META_KEY, {
                     "id": token_id,
                     "name": result.get("name", name),
                     "scopes": scope_list,
                     "expires_at": expires_at.isoformat(),
-                    "org_id": org_id,
+                    "org_id": effective_org_id,
                 })
 
                 # Log the token to the user's UI (invisible to the LLM)
@@ -597,7 +625,7 @@ def create_mcp_server() -> FastMCP:
                 return {"error": f"Failed to create scoped token: {str(e)}"}
 
         @mcp.tool()
-        async def get_token_status(ctx: Context = None) -> Dict[str, Any]:
+        async def get_token_status(ctx: Context | None = None) -> Dict[str, Any]:
             """Check the current token status for this session.
 
             Returns information about whether a scoped token is active,
@@ -610,7 +638,7 @@ def create_mcp_server() -> FastMCP:
             """
             if not ctx:
                 return {"status": "unknown", "message": "No session context available."}
-            meta = await ctx.get_state(_SESSION_TOKEN_META_KEY)
+            meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
             if meta:
                 expires_at_str = meta.get("expires_at")
                 if expires_at_str:
@@ -635,7 +663,7 @@ def create_mcp_server() -> FastMCP:
             }
 
         @mcp.tool()
-        async def clear_scoped_token(ctx: Context = None) -> Dict[str, Any]:
+        async def clear_scoped_token(ctx: Context | None = None) -> Dict[str, Any]:
             """Clear the scoped token for this session, reverting to the default server token.
 
             Use this if the scoped token has expired or you need different permissions.
@@ -645,9 +673,9 @@ def create_mcp_server() -> FastMCP:
             """
             if not ctx:
                 return {"error": "This tool requires an interactive session."}
-            meta = await ctx.get_state(_SESSION_TOKEN_META_KEY)
-            await ctx.set_state(_SESSION_TOKEN_KEY, None)
-            await ctx.set_state(_SESSION_TOKEN_META_KEY, None)
+            meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
+            await ctx.set_state(SESSION_TOKEN_KEY, None)
+            await ctx.set_state(SESSION_TOKEN_META_KEY, None)
             if meta:
                 return {"status": "cleared", "message": f"Scoped token '{meta.get('name')}' cleared. Using default server token."}
             return {"status": "no_change", "message": "No scoped token was active."}
