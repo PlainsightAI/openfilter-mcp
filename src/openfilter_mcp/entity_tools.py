@@ -34,7 +34,9 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 
 from fastmcp.server.context import Context
 from fastmcp.server.elicitation import AcceptedElicitation
+from mcp.shared.exceptions import McpError
 
+from openfilter_mcp.approval_server import start_approval_server
 from openfilter_mcp.auth import get_auth_token, is_plainsight_employee, read_psctl_token
 from openfilter_mcp.redact import register_sensitive
 
@@ -44,6 +46,10 @@ _inflect_engine = inflect.engine()
 
 SESSION_TOKEN_KEY = "scoped_api_token"
 SESSION_TOKEN_META_KEY = "scoped_api_token_meta"
+
+# When false (default), entity tools require a scoped token.
+# Set OPF_MCP_ALLOW_UNSCOPED_TOKEN=true to allow API calls without scoping.
+ALLOW_UNSCOPED_TOKEN = os.getenv("OPF_MCP_ALLOW_UNSCOPED_TOKEN", "").lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -606,13 +612,32 @@ class EntityToolsHandler:
             await ctx.info(f"Scoped token '{token_name}' has expired. Requesting renewal...")
 
             scope_lines = "\n".join(f"  - {s}" for s in scopes)
-            approval = await ctx.elicit(
-                f"Your scoped token '{token_name}' has expired.\n"
-                f"Re-create with same scopes?\n{scope_lines}",
-                ["Approve", "Deny"],
-            )
+            approved = False
+            try:
+                approval = await ctx.elicit(
+                    f"Your scoped token '{token_name}' has expired.\n"
+                    f"Re-create with same scopes?\n{scope_lines}",
+                    ["Approve", "Deny"],
+                )
+                approved = isinstance(approval, AcceptedElicitation) and approval.data == "Approve"
+            except McpError as e:
+                err_msg = str(e)
+                if "Method not found" not in err_msg and "not supported" not in err_msg:
+                    raise
+                # Client doesn't support elicitation — fall back to browser approval
+                session = await start_approval_server(
+                    title="Token Renewal",
+                    message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
+                    details={"Token name": token_name, "Scopes": scopes},
+                    timeout_seconds=60,
+                )
+                await ctx.info(
+                    f"Token '{token_name}' expired. Approve renewal at:\n\n  {session.url}"
+                )
+                result = await session.wait()
+                approved = result == "approve"
 
-            if not isinstance(approval, AcceptedElicitation) or approval.data != "Approve":
+            if not approved:
                 await ctx.info(f"Token renewal denied for '{token_name}'. Falling back to default token.")
                 return None
 
@@ -780,6 +805,13 @@ class EntityToolsHandler:
                             scoped_meta = None
                 except (ValueError, TypeError):
                     logger.warning("Malformed expires_at in scoped token metadata: %s", expires_at_str)
+
+        if not scoped_token and not ALLOW_UNSCOPED_TOKEN:
+            raise PermissionError(
+                "A scoped token is required for all API operations. "
+                "Call request_scoped_token first to create a least-privilege token. "
+                "(Set OPF_MCP_ALLOW_UNSCOPED_TOKEN=true to bypass this check.)"
+            )
 
         if scoped_token:
             headers["Authorization"] = f"Bearer {scoped_token}"

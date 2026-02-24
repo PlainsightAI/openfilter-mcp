@@ -894,6 +894,28 @@ class TestScopedTokenHeaders:
 
         assert headers is None
 
+    @pytest.mark.asyncio
+    async def test_scoped_token_required_by_default(self, handler, mock_ctx_without_token):
+        """By default (ALLOW_UNSCOPED_TOKEN=False), requests without a scoped token are rejected."""
+        with patch("openfilter_mcp.entity_tools.ALLOW_UNSCOPED_TOKEN", False):
+            with pytest.raises(PermissionError, match="scoped token is required"):
+                await handler._get_request_headers(org_id=None, ctx=mock_ctx_without_token)
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_required_allows_with_token(self, handler, mock_ctx_with_token):
+        """Even when scoped tokens are required, requests WITH a scoped token proceed normally."""
+        with patch("openfilter_mcp.entity_tools.ALLOW_UNSCOPED_TOKEN", False):
+            headers = await handler._get_request_headers(org_id=None, ctx=mock_ctx_with_token)
+            assert headers is not None
+            assert "Authorization" in headers
+
+    @pytest.mark.asyncio
+    async def test_allow_unscoped_token_bypasses_check(self, handler, mock_ctx_without_token):
+        """When ALLOW_UNSCOPED_TOKEN=True, requests without a scoped token are allowed."""
+        with patch("openfilter_mcp.entity_tools.ALLOW_UNSCOPED_TOKEN", True):
+            headers = await handler._get_request_headers(org_id=None, ctx=mock_ctx_without_token)
+            assert headers is None
+
 
 class TestEntitySearch:
     """Tests for entity search via list_entity_summaries."""
