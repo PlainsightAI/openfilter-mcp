@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 _inflect_engine = inflect.engine()
 
+SESSION_TOKEN_KEY = "scoped_api_token"
+SESSION_TOKEN_META_KEY = "scoped_api_token_meta"
+
 
 @dataclass
 class EntityOperation:
@@ -656,14 +659,14 @@ class EntityToolsHandler:
                 "expires_at": expires_at.isoformat(),
                 "org_id": org_id,
             }
-            await ctx.set_state("scoped_api_token", new_token)
-            await ctx.set_state("scoped_api_token_meta", new_meta)
+            await ctx.set_state(SESSION_TOKEN_KEY, new_token)
+            await ctx.set_state(SESSION_TOKEN_META_KEY, new_meta)
 
             await ctx.info(f"Scoped token renewed successfully (new ID: {new_id}).")
             return new_token
 
-        except Exception:
-            logger.exception("Error during scoped token renewal for '%s'", token_name)
+        except Exception as e:
+            logger.error("Error during scoped token renewal for '%s': %s", token_name, e)
             return None
 
     def _validate_schema(self, data: dict, schema: dict | None, context: str) -> list[str]:
@@ -733,8 +736,8 @@ class EntityToolsHandler:
         scoped_meta = None
         if ctx:
             try:
-                scoped_token = await ctx.get_state("scoped_api_token")
-                scoped_meta = await ctx.get_state("scoped_api_token_meta")
+                scoped_token = await ctx.get_state(SESSION_TOKEN_KEY)
+                scoped_meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
             except Exception:
                 pass
 
@@ -753,7 +756,7 @@ class EntityToolsHandler:
                                 scoped_token = new_token
                                 # Refresh meta from session state after renewal
                                 try:
-                                    scoped_meta = await ctx.get_state("scoped_api_token_meta")
+                                    scoped_meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
                                 except Exception:
                                     pass
                             else:
@@ -761,8 +764,8 @@ class EntityToolsHandler:
                                 scoped_token = None
                                 scoped_meta = None
                                 try:
-                                    await ctx.set_state("scoped_api_token", None)
-                                    await ctx.set_state("scoped_api_token_meta", None)
+                                    await ctx.set_state(SESSION_TOKEN_KEY, None)
+                                    await ctx.set_state(SESSION_TOKEN_META_KEY, None)
                                 except Exception:
                                     pass
                         else:
@@ -770,7 +773,7 @@ class EntityToolsHandler:
                             scoped_token = None
                             scoped_meta = None
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning("Malformed expires_at in scoped token metadata: %s", expires_at_str)
 
         if scoped_token:
             headers["Authorization"] = f"Bearer {scoped_token}"
@@ -1195,7 +1198,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Create a new entity of the specified type.
 
@@ -1218,7 +1221,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Get an entity by its ID.
 
@@ -1239,7 +1242,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         filters: dict | None = None,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """List entities of the specified type with optional filtering.
 
@@ -1262,7 +1265,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Update an existing entity.
 
@@ -1284,7 +1287,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         id: str,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Delete an entity by its ID.
 
@@ -1307,7 +1310,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict):
         data: dict | None = None,
         path_params: dict | None = None,
         org_id: str | None = None,
-        ctx: Context = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Execute a custom action on an entity (start, stop, cancel, etc.).
 
