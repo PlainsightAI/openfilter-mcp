@@ -28,7 +28,7 @@ jobs:
         run: uv sync --group dev --no-install-package code-context --no-install-package llama-cpp-python
 
       - name: Install Playwright browsers
-        run: uv run playwright install --with-deps chromium
+        run: uv run --no-sync playwright install --with-deps chromium
 
       - name: Run tests
         run: uv run --no-sync python -m pytest tests/ -v --tb=short
