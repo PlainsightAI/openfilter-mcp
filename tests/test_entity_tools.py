@@ -568,11 +568,25 @@ class TestExtractEntityName:
             ("deployment-update-status", "/deployments/{pipeline_instance_id}/status", "deployment"),
             # === Compound actions (verb-and-verb treated as single action) ===
             ("test-run-create-and-execute", "/tests/{test_id}/runs", "test_run"),
-            # === Sub-entity operations (entity_action_subentity -> entity) ===
-            ("organization-get-subscription", "/organizations/{id}/subscription", "organization"),
-            ("organization-create-secret", "/organizations/{id}/secrets", "organization"),
-            ("organization-delete-secret", "/organizations/{id}/secrets/{subject}", "organization"),
+            # === Sub-entity operations (trailing words after action → path fallback) ===
+            ("organization-get-subscription", "/organizations/{id}/subscription", "subscription"),
+            ("organization-create-secret", "/organizations/{id}/secrets", "secret"),
+            ("organization-delete-secret", "/organizations/{id}/secrets/{subject}", "secret"),
+            ("organization-update-plan", "/organizations/{id}/updatePlan", "updatePlan"),
             ("project-list-by-organization", "/organizations/{organization_id}/projects", "project"),
+            # Sub-resource: filter-pipeline event sub-entities
+            ("filter-pipeline-list-event-filters", "/filter-pipelines/{id}/events-filters", "events_filter"),
+            ("filter-pipeline-get-event", "/filter-pipelines/{id}/events/{event_id}", "event"),
+            ("filter-pipeline-ingest-events", "/filter-pipelines/{id_or_name}/events", "event"),
+            # Export format modifiers (trailing k8s/compose/cli in _NON_ENTITY_NAMES → op-ID entity)
+            ("pipeline-export-k8s", "/filter-pipelines/{id_or_name}/export/k8s", "pipeline"),
+            ("pipeline-export-compose", "/filter-pipelines/{id_or_name}/export/compose", "pipeline"),
+            ("pipeline-export-cli", "/filter-pipelines/{id_or_name}/export/cli", "pipeline"),
+            # Agent admin sub-resources fall through to path
+            ("agent-admin-get-source-config", "/agents/admin/source-configs/{id_or_name}", "source_config"),
+            ("agent-admin-get-pipeline-instance", "/agents/admin/pipeline-instances/{id_or_name}", "pipeline_instance"),
+            # Singularization exceptions
+            ("corpus-list", "/projects/{project_id}/corpus", "corpus"),
         ],
     )
     def test_extract_entity_name(self, registry, operation_id, path, expected_entity):
@@ -1115,6 +1129,22 @@ class TestSingularization:
     def test_singular_word_unchanged(self):
         """Already-singular words are returned as-is."""
         assert EntityRegistry._singularize("project") == "project"
+
+    def test_corpus_not_over_singularized(self):
+        """'corpus' should stay 'corpus', not become 'corpu'."""
+        assert EntityRegistry._singularize("corpus") == "corpus"
+
+    def test_corpora_singularized(self):
+        """'corpora' should become 'corpus'."""
+        assert EntityRegistry._singularize("corpora") == "corpus"
+
+    def test_metadata_not_singularized(self):
+        """'metadata' should stay 'metadata', not become 'metadatum'."""
+        assert EntityRegistry._singularize("metadata") == "metadata"
+
+    def test_compound_with_metadata(self):
+        """Compound name with metadata keeps it unchanged."""
+        assert EntityRegistry._singularize("filters_with_metadata") == "filters_with_metadata"
 
 
 class TestSubRouteCollapsing:

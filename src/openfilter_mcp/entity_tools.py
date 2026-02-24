@@ -148,7 +148,8 @@ class EntityRegistry:
     }
     ALL_ACTIONS = CRUD_ACTIONS | CUSTOM_ACTIONS
     # Conjunctions that join compound actions (e.g., "create-and-execute")
-    _ACTION_CONNECTORS = {"and", "or"}
+    # "by" included for modifier patterns like "get-by-name", "list-by-organization"
+    _ACTION_CONNECTORS = {"and", "or", "by"}
 
     # Extracted names that indicate sub-routes, not real entities.
     # If _extract_entity_name produces one of these, we walk up the path.
@@ -157,6 +158,15 @@ class EntityRegistry:
         "url", "latest", "html", "error", "status", "compat", "report",
         "initiate", "initiate_compat", "create_and_execute",
         "get", "list", "restore", "name", "number",
+        # Export format modifiers (e.g., pipeline-export-k8s)
+        "k8s", "compose", "cli",
+    }
+
+    # Words that inflect singularizes incorrectly for API naming.
+    _SINGULARIZE_EXCEPTIONS: dict[str, str] = {
+        "corpus": "corpus",
+        "corpora": "corpus",
+        "metadata": "metadata",
     }
 
     @staticmethod
@@ -169,10 +179,16 @@ class EntityRegistry:
         word = word.replace("-", "_")
         if "_" in word:
             parts = word.split("_")
-            singular = _inflect_engine.singular_noun(parts[-1])
-            if singular:
-                parts[-1] = singular
+            last = parts[-1]
+            if last in EntityRegistry._SINGULARIZE_EXCEPTIONS:
+                parts[-1] = EntityRegistry._SINGULARIZE_EXCEPTIONS[last]
+            else:
+                singular = _inflect_engine.singular_noun(last)
+                if singular:
+                    parts[-1] = singular
             return "_".join(parts)
+        if word in EntityRegistry._SINGULARIZE_EXCEPTIONS:
+            return EntityRegistry._SINGULARIZE_EXCEPTIONS[word]
         singular = _inflect_engine.singular_noun(word)
         if singular:
             return singular
@@ -243,7 +259,21 @@ class EntityRegistry:
                         or entity_parts[-1] in self._ACTION_CONNECTORS
                     ):
                         entity_parts.pop()
-                    if entity_parts:
+
+                    # Check for meaningful words after the action verb.
+                    # If present, they indicate a sub-resource operation
+                    # (e.g., organization-create-secret → secret is the real
+                    # entity, not organization).  Fall through to path-based
+                    # extraction which handles sub-routes correctly.
+                    trailing = parts[action_idx + 1:]
+                    has_sub_resource = any(
+                        t not in self._NON_ENTITY_NAMES
+                        and t not in self.ALL_ACTIONS
+                        and t not in self._ACTION_CONNECTORS
+                        for t in trailing
+                    )
+
+                    if entity_parts and not has_sub_resource:
                         candidate = self._singularize("_".join(entity_parts))
 
         # Validate the candidate — if it's a known sub-route pattern, fall back to path
