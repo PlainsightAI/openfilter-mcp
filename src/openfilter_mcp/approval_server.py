@@ -29,16 +29,25 @@ from urllib.parse import parse_qs
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Brand colors from Plainsight brand guidelines (May 2024)
+# Brand colors — matching client-portal dark mode theme (theme.ts / theme-semantic.ts)
+# with Plainsight brand guidelines (May 2024)
 # ---------------------------------------------------------------------------
-_MIDNIGHT = "#242444"
-_TURQUOISE = "#6399AE"
-_GRAPE = "#6D2077"
-_PURPLE = "#615E9B"
-_LIGHT_SKY = "#B6CFD0"
-_DUSK = "#E5E2E7"
-_NOON = "#73BDC5"
-_WHITE = "#FFFFFF"
+_PAGE_BG = "#0F1020"          # page background (very dark navy, from portal)
+_CARD_BG = "#242550"          # card background (dark purple, from portal)
+_CARD_BG_SUBTLE = "#1A1B3A"   # midnight — secondary bg
+_TURQUOISE = "#4A8DA8"        # primary brand (portal value)
+_TURQUOISE_HOVER = "#5BB4C4"  # noon — hover state
+_PURPLE = "#7B78B3"           # secondary brand (portal value)
+_GRAPE = "#8E2B99"            # accent/highlight (portal value)
+_LIGHT_SKY = "#B6CFD0"        # secondary text / borders
+_SEAGULL = "#5A7F84"          # muted text / borders
+_TWILIGHT = "#3968D0"         # bright blue accent
+_TEXT_PRIMARY = "#FFFFFF"
+_TEXT_SECONDARY = "#B6CFD0"
+_TEXT_MUTED = "#5A7F84"
+_BORDER = "#5A7F84"
+_SUCCESS = "#68D391"
+_ERROR = "#F50057"
 
 # Bulma CDN (pure CSS, no JS build step)
 _BULMA_CDN = "https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css"
@@ -61,8 +70,7 @@ def _render_approval_page(
         else:
             escaped_val = html.escape(str(value))
         detail_rows.append(
-            f'<tr><th class="has-text-left" style="white-space:nowrap; '
-            f'padding-right:1.5rem; color:{_PURPLE};">{html.escape(key)}</th>'
+            f'<tr><th>{html.escape(key)}</th>'
             f'<td><code>{escaped_val}</code></td></tr>'
         )
     details_html = "\n".join(detail_rows)
@@ -77,127 +85,137 @@ def _render_approval_page(
   <link rel="stylesheet" href="{_BULMA_CDN}">
   <link rel="stylesheet" href="{_LATO_CDN}">
   <style>
-    :root {{
-      --midnight: {_MIDNIGHT};
-      --turquoise: {_TURQUOISE};
-      --grape: {_GRAPE};
-      --purple: {_PURPLE};
-      --light-sky: {_LIGHT_SKY};
-      --dusk: {_DUSK};
-      --noon: {_NOON};
-    }}
+    *,*::before,*::after {{ box-sizing: border-box; }}
     body {{
-      font-family: 'Lato', 'Open Sans', sans-serif;
-      background: var(--dusk);
+      font-family: 'Open Sans', 'Lato', sans-serif;
+      background: {_PAGE_BG};
+      background-image: radial-gradient(ellipse at 30% 20%, rgba(57, 104, 208, 0.08) 0%, transparent 60%),
+                        radial-gradient(ellipse at 70% 80%, rgba(142, 43, 153, 0.06) 0%, transparent 60%);
+      color: {_TEXT_PRIMARY};
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 1rem;
     }}
     .approval-card {{
-      max-width: 540px;
+      max-width: 520px;
       width: 100%;
-      border-radius: 12px;
+      background: {_CARD_BG};
+      border-radius: 16px;
       overflow: hidden;
-      box-shadow: 0 8px 30px rgba(36, 36, 68, 0.15);
+      box-shadow: 0 4px 20px rgba(0, 176, 255, 0.08), 0 2px 8px rgba(26, 27, 58, 0.4);
+      position: relative;
+    }}
+    /* gradient top border — matches portal card style */
+    .approval-card::before {{
+      content: '';
+      display: block;
+      height: 3px;
+      background: linear-gradient(90deg, {_TURQUOISE}, {_PURPLE}, {_GRAPE});
     }}
     .card-header-banner {{
-      background: linear-gradient(135deg, var(--midnight) 0%, var(--purple) 50%, var(--grape) 100%);
-      padding: 1.5rem 2rem;
+      padding: 1.75rem 2rem 1.25rem;
     }}
     .card-header-banner h1 {{
-      color: {_WHITE};
-      font-size: 1.35rem;
+      font-family: 'Lato', sans-serif;
+      color: {_TEXT_PRIMARY};
+      font-size: 1.4rem;
       font-weight: 700;
       margin: 0;
     }}
     .card-header-banner .subtitle {{
-      color: var(--light-sky);
-      font-size: 0.85rem;
-      margin-top: 0.25rem;
+      color: {_TEXT_SECONDARY};
+      font-size: 0.8rem;
+      margin-top: 0.3rem;
       font-weight: 300;
+      letter-spacing: 0.02em;
     }}
     .card-body {{
-      background: {_WHITE};
-      padding: 2rem;
+      padding: 0 2rem 1.5rem;
     }}
     .card-body .message-text {{
-      color: var(--midnight);
-      font-size: 0.95rem;
-      line-height: 1.6;
-      margin-bottom: 1.5rem;
+      color: {_TEXT_SECONDARY};
+      font-size: 0.9rem;
+      line-height: 1.65;
+      margin-bottom: 1.25rem;
     }}
     .detail-table {{
       width: 100%;
       margin-bottom: 1.5rem;
+      border-collapse: collapse;
     }}
     .detail-table th {{
-      font-size: 0.85rem;
+      font-family: 'Lato', sans-serif;
+      font-size: 0.8rem;
       font-weight: 600;
-      padding: 0.4rem 0;
+      color: {_TURQUOISE};
+      padding: 0.5rem 1.25rem 0.5rem 0;
       vertical-align: top;
+      white-space: nowrap;
+      text-align: left;
     }}
     .detail-table td {{
       font-size: 0.85rem;
-      padding: 0.4rem 0;
+      padding: 0.5rem 0;
+      color: {_TEXT_PRIMARY};
     }}
     .detail-table code {{
-      background: var(--dusk);
-      padding: 0.15rem 0.4rem;
-      border-radius: 4px;
-      font-size: 0.8rem;
-      color: var(--midnight);
-    }}
-    .btn-approve {{
-      background: var(--turquoise);
-      border: none;
-      color: {_WHITE};
-      font-weight: 700;
-      font-family: 'Lato', sans-serif;
-      transition: background 0.2s;
-    }}
-    .btn-approve:hover {{
-      background: var(--noon);
-      color: {_WHITE};
-    }}
-    .btn-deny {{
-      background: transparent;
-      border: 2px solid var(--purple);
-      color: var(--purple);
-      font-weight: 600;
-      font-family: 'Lato', sans-serif;
-      transition: all 0.2s;
-    }}
-    .btn-deny:hover {{
-      background: var(--purple);
-      color: {_WHITE};
+      background: {_CARD_BG_SUBTLE};
+      border: 1px solid {_BORDER};
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-family: Consolas, 'Courier New', monospace;
+      color: {_LIGHT_SKY};
     }}
     .card-footer-bar {{
-      background: {_WHITE};
-      padding: 0 2rem 1.5rem;
+      padding: 0 2rem 1.75rem;
       display: flex;
       gap: 0.75rem;
       justify-content: flex-end;
     }}
+    .btn-approve {{
+      background: {_TURQUOISE};
+      border: none;
+      color: {_TEXT_PRIMARY};
+      font-weight: 700;
+      font-family: 'Lato', sans-serif;
+      border-radius: 12px;
+      padding: 0.6rem 1.75rem;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 2px 8px rgba(74, 141, 168, 0.3);
+    }}
+    .btn-approve:hover {{
+      background: {_TURQUOISE_HOVER};
+      color: {_TEXT_PRIMARY};
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(74, 141, 168, 0.4);
+    }}
+    .btn-deny {{
+      background: transparent;
+      border: 2px solid {_BORDER};
+      color: {_TEXT_SECONDARY};
+      font-weight: 600;
+      font-family: 'Lato', sans-serif;
+      border-radius: 12px;
+      padding: 0.6rem 1.75rem;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }}
+    .btn-deny:hover {{
+      border-color: {_PURPLE};
+      color: {_TEXT_PRIMARY};
+      background: rgba(123, 120, 179, 0.15);
+      transform: translateY(-2px);
+    }}
     .security-note {{
-      color: #888B8D;
-      font-size: 0.72rem;
+      color: {_TEXT_MUTED};
+      font-size: 0.7rem;
       text-align: center;
       padding: 0.75rem 2rem;
-      background: var(--dusk);
-      border-top: 1px solid #d5d5d5;
-    }}
-    .responded {{
-      text-align: center;
-      padding: 3rem 2rem;
-    }}
-    .responded h2 {{
-      color: var(--midnight);
-      font-weight: 700;
-    }}
-    .responded p {{
-      color: #888B8D;
-      margin-top: 0.5rem;
+      border-top: 1px solid rgba(90, 127, 132, 0.3);
     }}
   </style>
 </head>
@@ -240,7 +258,7 @@ def _render_response_page(action: str) -> str:
         icon = "&#10003;"
         heading = "Approved"
         detail = "The scoped token has been created. You can close this tab."
-        color = _TURQUOISE
+        color = _SUCCESS
     elif action == "timeout":
         icon = "&#9201;"
         heading = "Timed Out"
@@ -250,7 +268,7 @@ def _render_response_page(action: str) -> str:
         icon = "&#10007;"
         heading = "Denied"
         detail = "The token request was denied. You can close this tab."
-        color = _GRAPE
+        color = _ERROR
 
     return f"""\
 <!DOCTYPE html>
@@ -263,8 +281,11 @@ def _render_response_page(action: str) -> str:
   <link rel="stylesheet" href="{_LATO_CDN}">
   <style>
     body {{
-      font-family: 'Lato', 'Open Sans', sans-serif;
-      background: {_DUSK};
+      font-family: 'Open Sans', 'Lato', sans-serif;
+      background: {_PAGE_BG};
+      background-image: radial-gradient(ellipse at 30% 20%, rgba(57, 104, 208, 0.08) 0%, transparent 60%),
+                        radial-gradient(ellipse at 70% 80%, rgba(142, 43, 153, 0.06) 0%, transparent 60%);
+      color: {_TEXT_PRIMARY};
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -273,12 +294,20 @@ def _render_response_page(action: str) -> str:
     .result-card {{
       max-width: 420px;
       width: 100%;
-      border-radius: 12px;
+      background: {_CARD_BG};
+      border-radius: 16px;
       overflow: hidden;
-      box-shadow: 0 8px 30px rgba(36, 36, 68, 0.15);
-      background: {_WHITE};
+      box-shadow: 0 4px 20px rgba(0, 176, 255, 0.08), 0 2px 8px rgba(26, 27, 58, 0.4);
       text-align: center;
       padding: 3rem 2rem;
+      position: relative;
+    }}
+    .result-card::before {{
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, {_TURQUOISE}, {_PURPLE}, {_GRAPE});
     }}
     .result-icon {{
       font-size: 3rem;
@@ -286,12 +315,13 @@ def _render_response_page(action: str) -> str:
       margin-bottom: 1rem;
     }}
     .result-card h2 {{
-      color: {_MIDNIGHT};
+      font-family: 'Lato', sans-serif;
+      color: {_TEXT_PRIMARY};
       font-weight: 700;
       font-size: 1.5rem;
     }}
     .result-card p {{
-      color: #888B8D;
+      color: {_TEXT_MUTED};
       margin-top: 0.5rem;
       font-size: 0.9rem;
     }}
