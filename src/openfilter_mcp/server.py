@@ -2,8 +2,9 @@
 
 Provides tools for interacting with the Plainsight API and code search:
 
-1. **Entity-Based API Tools** (7 tools instead of 100+):
-   - `list_entity_types`: Discover available entities and their schemas
+1. **Entity-Based API Tools** (8 tools instead of 100+):
+   - `list_entity_types`: Discover available entities with optional full-text search
+   - `get_entity_type_info`: Get full operation metadata for specific entity types
    - `create_entity`, `get_entity`, `list_entities`, `update_entity`, `delete_entity`: CRUD operations
    - `entity_action`: Custom actions like start, stop, cancel
 
@@ -27,8 +28,16 @@ from typing import Any, Dict
 
 import httpx
 
-from code_context.indexing import INDEXES_DIR
-from code_context.main import _get_chunk, _search_index
+# code-context is an optional dependency (install with `uv sync --extra code-search`)
+try:
+    from code_context.indexing import INDEXES_DIR
+    from code_context.main import _get_chunk, _search_index
+
+    HAS_CODE_CONTEXT = True
+except ImportError:
+    INDEXES_DIR = "indexes"
+    HAS_CODE_CONTEXT = False
+
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from fastmcp.server.elicitation import AcceptedElicitation
@@ -327,7 +336,7 @@ def create_mcp_server() -> FastMCP:
     # Check if code search is enabled (default: true)
     enable_code_search = os.getenv("ENABLE_CODE_SEARCH", "true").lower() == "true"
 
-    if enable_code_search:
+    if enable_code_search and HAS_CODE_CONTEXT:
         # Get the latest index name for code search tools
         latest_index_name = get_latest_index_name()
 
@@ -362,6 +371,14 @@ def create_mcp_server() -> FastMCP:
             lines = content.splitlines()
             content = "\n".join(lines[start_line : start_line + line_count])
             return content
+
+    elif enable_code_search and not HAS_CODE_CONTEXT:
+        import sys
+        print(
+            "WARNING: ENABLE_CODE_SEARCH is true but code-context is not installed. "
+            "Install with: uv sync --extra code-search",
+            file=sys.stderr,
+        )
 
     # =========================================================================
     # Generic Polling Tool (only available with authentication)
@@ -645,7 +662,8 @@ def create_mcp_server() -> FastMCP:
 
 def main():
     # Ensure necessary directories exist
-    os.makedirs(INDEXES_DIR, exist_ok=True)
+    if HAS_CODE_CONTEXT:
+        os.makedirs(INDEXES_DIR, exist_ok=True)
 
     # Create server at runtime (not at import time)
     mcp = create_mcp_server()

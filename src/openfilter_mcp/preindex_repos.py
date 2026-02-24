@@ -4,7 +4,10 @@ import os
 import time
 import git
 import shutil
-from code_context.indexing import index_repository_direct
+try:
+    from code_context.indexing import index_repository_direct
+except ImportError:
+    index_repository_direct = None
 
 MONOREPO_CLONE_DIR = "openfilter_repos_clones"
 
@@ -14,6 +17,10 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
     clones them into a monorepo directory, and then indexes the monorepo
     using code_context's core indexing function.
     """
+    if index_repository_direct is None:
+        print("Error: code-context is not installed. Install with: uv sync --extra code-search")
+        return
+
     print(f"Fetching repositories for organization: {org_name}")
     headers = {"Accept": "application/vnd.github.v3+json"}
     github_token = os.getenv("GITHUB_TOKEN")
