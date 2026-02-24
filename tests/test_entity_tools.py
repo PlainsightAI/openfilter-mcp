@@ -1228,3 +1228,215 @@ class TestMeaningfulDescriptions:
         results = registry.list_entity_summaries()
         project_entry = next(r for r in results if r["name"] == "project")
         assert "List all projects" in project_entry["description"]
+
+
+class TestExpiredTokenHandling:
+    """Tests for expired scoped token handling and auto-renewal."""
+
+    @pytest.fixture
+    def mock_client(self):
+        client = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def handler(self, mock_client):
+        registry = EntityRegistry(SAMPLE_OPENAPI_SPEC)
+        return EntityToolsHandler(mock_client, registry)
+
+    def _make_ctx_with_expired_token(self):
+        """Create a mock Context with an expired scoped token."""
+        ctx = AsyncMock()
+        state = {
+            "scoped_api_token": "ps_scoped_expired_token",
+            "scoped_api_token_meta": {
+                "id": "token-expired-123",
+                "name": "expired-token",
+                "scopes": ["project:read"],
+                "expires_at": "2020-01-01T00:00:00+00:00",  # In the past
+                "org_id": "org-uuid-456",
+            },
+        }
+        ctx.get_state = AsyncMock(side_effect=lambda key: state.get(key))
+        ctx.set_state = AsyncMock()
+        ctx.info = AsyncMock()
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_expired_token_triggers_renewal(self, handler):
+        """When scoped token is expired, _recreate_expired_token is called."""
+        ctx = self._make_ctx_with_expired_token()
+
+        with patch.object(handler, "_recreate_expired_token", return_value="ps_new_refreshed_token") as mock_renew:
+            # After renewal, get_state for meta should return updated meta
+            renewed_meta = {
+                "id": "token-new-123",
+                "name": "expired-token",
+                "scopes": ["project:read"],
+                "expires_at": "2030-01-01T00:00:00+00:00",
+                "org_id": "org-uuid-456",
+            }
+            # After _recreate_expired_token is called, the next get_state for meta returns renewed_meta
+            original_side_effect = ctx.get_state.side_effect
+            call_count = [0]
+
+            async def smart_get_state(key):
+                call_count[0] += 1
+                # After renewal (calls 3+), return renewed meta
+                if call_count[0] > 2 and key == "scoped_api_token_meta":
+                    return renewed_meta
+                return await AsyncMock(side_effect=original_side_effect)(key)
+
+            ctx.get_state = AsyncMock(side_effect=smart_get_state)
+
+            headers = await handler._get_request_headers(org_id=None, ctx=ctx)
+
+        mock_renew.assert_called_once()
+        assert headers is not None
+        assert headers["Authorization"] == "Bearer ps_new_refreshed_token"
+
+    @pytest.mark.asyncio
+    async def test_expired_token_renewal_denied_clears_state(self, handler):
+        """When renewal is denied, session state is cleared and headers fall back to None."""
+        ctx = self._make_ctx_with_expired_token()
+
+        with patch.object(handler, "_recreate_expired_token", return_value=None):
+            headers = await handler._get_request_headers(org_id=None, ctx=ctx)
+
+        assert headers is None
+        # Verify session state was cleared
+        ctx.set_state.assert_any_call("scoped_api_token", None)
+        ctx.set_state.assert_any_call("scoped_api_token_meta", None)
+
+    @pytest.mark.asyncio
+    async def test_expired_token_no_ctx_falls_back(self, handler):
+        """With expired token but ctx=None, falls back to None headers."""
+        # This tests the branch where ctx is not available
+        # We need to simulate the scenario where scoped_token is set but ctx is None
+        # Since ctx=None means we can't read session state at all, headers should be None
+        headers = await handler._get_request_headers(org_id=None, ctx=None)
+        assert headers is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_expires_at_logs_warning(self, handler):
+        """Malformed expires_at logs a warning and still uses the token."""
+        ctx = AsyncMock()
+        state = {
+            "scoped_api_token": "ps_scoped_malformed_token",
+            "scoped_api_token_meta": {
+                "id": "token-malformed-123",
+                "name": "malformed-token",
+                "scopes": ["project:read"],
+                "expires_at": "not-a-date",
+                "org_id": "org-uuid-456",
+            },
+        }
+        ctx.get_state = AsyncMock(side_effect=lambda key: state.get(key))
+
+        with patch("openfilter_mcp.entity_tools.logger") as mock_logger:
+            headers = await handler._get_request_headers(org_id=None, ctx=ctx)
+
+        # Token should still be used despite malformed expiry
+        assert headers is not None
+        assert headers["Authorization"] == "Bearer ps_scoped_malformed_token"
+        # Warning should have been logged
+        mock_logger.warning.assert_called_once()
+        assert "Malformed expires_at" in mock_logger.warning.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_recreate_expired_token_success(self, handler, mock_client):
+        """Direct test: _recreate_expired_token returns new token on approval."""
+        ctx = AsyncMock()
+        ctx.elicit = AsyncMock()
+        # Mock AcceptedElicitation
+        from fastmcp.server.elicitation import AcceptedElicitation
+
+        mock_accepted = MagicMock(spec=AcceptedElicitation)
+        mock_accepted.data = "Approve"
+        ctx.elicit.return_value = mock_accepted
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"token": "ps_renewed_token_abc", "id": "new-token-id"}
+        mock_client.post.return_value = mock_response
+
+        scoped_meta = {
+            "name": "test-token",
+            "scopes": ["project:read", "deployment:read"],
+            "org_id": "org-uuid-456",
+        }
+
+        result = await handler._recreate_expired_token(scoped_meta, ctx)
+
+        assert result == "ps_renewed_token_abc"
+        # Verify session state was updated
+        ctx.set_state.assert_any_call("scoped_api_token", "ps_renewed_token_abc")
+
+    @pytest.mark.asyncio
+    async def test_recreate_expired_token_denied(self, handler, mock_client):
+        """Direct test: _recreate_expired_token returns None when user denies."""
+        ctx = AsyncMock()
+        ctx.elicit = AsyncMock()
+        # Return a non-AcceptedElicitation (user denied)
+        ctx.elicit.return_value = MagicMock(data="Deny")
+
+        scoped_meta = {
+            "name": "test-token",
+            "scopes": ["project:read"],
+            "org_id": "org-uuid-456",
+        }
+
+        result = await handler._recreate_expired_token(scoped_meta, ctx)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_recreate_expired_token_api_failure(self, handler, mock_client):
+        """Direct test: _recreate_expired_token returns None on API error."""
+        ctx = AsyncMock()
+        ctx.elicit = AsyncMock()
+        from fastmcp.server.elicitation import AcceptedElicitation
+
+        mock_accepted = MagicMock(spec=AcceptedElicitation)
+        mock_accepted.data = "Approve"
+        ctx.elicit.return_value = mock_accepted
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_client.post.return_value = mock_response
+
+        scoped_meta = {
+            "name": "test-token",
+            "scopes": ["project:read"],
+            "org_id": "org-uuid-456",
+        }
+
+        result = await handler._recreate_expired_token(scoped_meta, ctx)
+        assert result is None
+        ctx.info.assert_called()  # Should inform user of failure
+
+    @pytest.mark.asyncio
+    async def test_recreate_expired_token_exception_no_token_leak(self, handler, mock_client):
+        """Exception in _recreate_expired_token uses logger.error, not logger.exception."""
+        ctx = AsyncMock()
+        ctx.elicit = AsyncMock()
+        from fastmcp.server.elicitation import AcceptedElicitation
+
+        mock_accepted = MagicMock(spec=AcceptedElicitation)
+        mock_accepted.data = "Approve"
+        ctx.elicit.return_value = mock_accepted
+
+        # Make the API call raise an exception
+        mock_client.post.side_effect = RuntimeError("connection failed")
+
+        scoped_meta = {
+            "name": "test-token",
+            "scopes": ["project:read"],
+            "org_id": "org-uuid-456",
+        }
+
+        with patch("openfilter_mcp.entity_tools.logger") as mock_logger:
+            result = await handler._recreate_expired_token(scoped_meta, ctx)
+
+        assert result is None
+        # Should use logger.error (not logger.exception) to avoid stack trace with token
+        mock_logger.error.assert_called()
+        mock_logger.exception.assert_not_called()
