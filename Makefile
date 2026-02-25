@@ -27,25 +27,29 @@ test: ## Run tests
 # ─── Build ────────────────────────────────────────────────────────────────────
 
 build.slim: ## Build slim Docker image (no ML deps, ~370MB)
-	docker build -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
+	docker build --no-cache -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
 
 build.full: indexes ## Build full Docker image (with code search indexes)
-	docker build -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
+	docker build --no-cache -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
 
 indexes: ## Ensure indexes exist (extract from published image if missing)
 	@test -d indexes || $(MAKE) index.extract
 
 build.run.slim: build.slim ## Build and run slim image (with auth)
-	docker run --rm -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):slim
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):slim
 
 build.run.full: build.full ## Build and run full image (with auth)
-	docker run --rm -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):full
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):full
 
 run.slim: ## Run published slim image (with auth)
-	docker run --rm -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest-slim
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest-slim
 
 run.full: ## Run published full image (with auth)
-	docker run --rm -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest
 
 # ─── Index ────────────────────────────────────────────────────────────────────
 
