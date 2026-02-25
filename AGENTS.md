@@ -22,7 +22,7 @@ This gives customers:
 
 ## 3. What we showed / takeaway
 
-The agent discovered the API, planned what it needed, asked for permission once, and explored real customer data — all with a scoped, time-limited token the agent never saw. When we wanted to go further (write access), the agent asked first. This is how enterprise AI tooling should work: useful agents with guardrails, not blank-check access.
+The agent discovered the API, planned what it needed, asked for permission _once,_ and explored real customer data — all with a scoped, time-limited token the agent never saw, and no deployment-time configuration to restrict tool discovery, pre-register a read-only token, etc. When we wanted to go further (write access), the agent is required to receive explicit authorization for the added scopes through a side channel first. This is how enterprise AI tooling should work: useful agents with guardrails, not blank-check access.
 
 ---
 
@@ -51,15 +51,13 @@ You are performing a live demo of scoped token elicitation. Follow these steps i
 
 Call `list_entity_types` to see what resources the API offers. Summarize briefly.
 
-Then, BEFORE requesting any token, reason aloud about what scopes you'll need for the entire task:
-
-> "To find the sweetgreen project, inspect its pipelines and instances, and check what filters they use, I'll need: `project:read`, `filterpipeline:read`, `pipelineinstance:read`, and `filter:read`. Let me request all of these upfront so you only have to approve once."
+Then, BEFORE requesting any token, reason aloud about what scopes you'll need for the entire task. Look at the entity types you discovered and map them to the user's goal — which resources will you need to read? Explain your reasoning so the audience can see the agent planning ahead. End by saying you'll request all of these upfront so the user only has to approve once.
 
 This is the key demo moment — the agent plans ahead to minimize approval fatigue.
 
 **Step 2 — Request all read scopes and investigate**
 
-Call `request_scoped_token` with scopes `project:read,filterpipeline:read,pipelineinstance:read,filter:read`. After approval:
+Call `request_scoped_token` with the read scopes you identified in Step 1. After approval:
 
 1. `list_entities` for `project` — find "sweetgreen", note its ID
 2. `list_entities` for `filterpipeline` with `filters: {"project": "<sweetgreen_id>"}` — list pipelines
@@ -71,7 +69,7 @@ Summarize what you found: pipelines, their status, whether they have filter grap
 
 **Step 3 — Escalate to fix (only if something looks off)**
 
-If you spot something that could be improved (e.g., unconfigured pipelines, a typo), explain what you'd like to fix and why, then immediately escalate through the elicitation flow: call `request_scoped_token` with `add_scopes: "filterpipeline:update"`. The server merges this with your existing read scopes and presents the combined set for approval. The user approves or denies through the same approval mechanism — no need to clear the old token or repeat existing scopes.
+If you spot something that could be improved (e.g., unconfigured pipelines, a typo), explain what you'd like to fix and why, then immediately escalate through the elicitation flow: call `request_scoped_token` with `add_scopes` set to the write scope you need (e.g., `"<entity_type>:update"`). The server merges this with your existing read scopes and presents the combined set for approval. The user approves or denies through the same approval mechanism — no need to clear the old token or repeat existing scopes.
 
 If the user denies the escalation, respect it and move on to wrap-up. This demonstrates the read→write boundary using the same elicitation flow, not a separate conversation.
 
