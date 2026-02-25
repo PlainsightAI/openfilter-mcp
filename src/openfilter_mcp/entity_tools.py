@@ -542,6 +542,41 @@ class EntityRegistry:
         """Get entity by name."""
         return self.entities.get(name)
 
+    def suggest_entity(self, name: str, limit: int = 3) -> list[str]:
+        """Suggest entity names for a misspelled/incorrectly-formatted name.
+
+        Uses the FTS index to find close matches. Handles common mistakes like
+        underscores (filter_pipeline → filterpipeline) and hyphens.
+        """
+        # Normalize: strip separators so "filter_pipeline" becomes "filterpipeline"
+        normalized = name.replace("_", "").replace("-", "")
+        if normalized in self.entities:
+            return [normalized]
+
+        # Try FTS with the original name (split on separators for multi-word search)
+        query_str = name.replace("_", " ").replace("-", " ")
+        try:
+            searcher = self._search_index.searcher()
+            parsed_query = self._search_index.parse_query(query_str, ["corpus"])
+            results = searcher.search(parsed_query, limit=limit)
+            return [searcher.doc(addr)["entity_name"][0] for _score, addr in results.hits]
+        except Exception:
+            return []
+
+    def unknown_entity_error(self, name: str) -> dict[str, Any]:
+        """Build a standardized error dict for an unknown entity type, with suggestions."""
+        suggestions = self.suggest_entity(name)
+        error: dict[str, Any] = {"error": f"Unknown entity type: '{name}'."}
+        if suggestions:
+            error["did_you_mean"] = suggestions
+            if len(suggestions) == 1:
+                error["hint"] = (
+                    f"Entity names are lowercase with no separators. "
+                    f"Try '{suggestions[0]}' instead of '{name}'."
+                )
+        error["available_entities"] = self.list_entities()
+        return error
+
     def list_entities(self) -> list[str]:
         """List all entity names."""
         return sorted(self.entities.keys())
@@ -670,18 +705,12 @@ class EntityRegistry:
     def get_entity_info_for(self, names: list[str]) -> dict[str, Any]:
         """Get detailed info for specific entities by name."""
         result = {}
-        available = None
         for name in names:
             entity = self.entities.get(name)
             if entity:
                 result[name] = self._format_entity_info(entity)
             else:
-                if available is None:
-                    available = self.list_entities()
-                result[name] = {
-                    "error": f"Unknown entity type: {name}",
-                    "available_entities": available,
-                }
+                result[name] = self.unknown_entity_error(name)
         return result
 
 
@@ -961,10 +990,7 @@ class EntityToolsHandler:
         """Create a new entity."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get("create")
         if not op:
@@ -1007,10 +1033,7 @@ class EntityToolsHandler:
         """Get an entity by ID."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get("get")
         if not op:
@@ -1048,10 +1071,7 @@ class EntityToolsHandler:
         """List entities with optional filters."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get("list")
         if not op:
@@ -1098,10 +1118,7 @@ class EntityToolsHandler:
         """Update an entity."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get("update")
         if not op:
@@ -1150,10 +1167,7 @@ class EntityToolsHandler:
         """Delete an entity."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get("delete")
         if not op:
@@ -1198,10 +1212,7 @@ class EntityToolsHandler:
         """Execute a custom action on an entity (start, stop, cancel, etc.)."""
         entity = self.registry.get_entity(entity_type)
         if not entity:
-            return {
-                "error": f"Unknown entity type: {entity_type}",
-                "available_entities": self.registry.list_entities(),
-            }
+            return self.registry.unknown_entity_error(entity_type)
 
         op = entity.operations.get(action)
         if not op:
@@ -1362,9 +1373,13 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     ) -> dict[str, Any]:
         """Create a new entity of the specified type.
 
+        IMPORTANT: entity_type names are lowercase with NO underscores or hyphens
+        (e.g., 'filterpipeline' not 'filter_pipeline'). Use list_entity_types()
+        to discover valid names.
+
         Args:
-            entity_type: The type of entity to create (e.g., 'project', 'organization', 'model').
-                        Use list_entity_types() to see available types.
+            entity_type: The type of entity to create. Must be a valid name
+                        from list_entity_types() — lowercase, no separators.
             data: The entity data matching the create schema.
             path_params: Optional path parameters for nested resources
                         (e.g., {'project_id': 'abc123'} for project-scoped entities).
@@ -1385,9 +1400,15 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     ) -> dict[str, Any]:
         """Get an entity by its ID.
 
+        IMPORTANT: entity_type names are lowercase with NO underscores or hyphens.
+        Use list_entity_types() to discover valid names. Common examples:
+        'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance'
+        (not 'pipeline_instance').
+
         Args:
-            entity_type: The type of entity to retrieve.
-            id: The entity's unique identifier.
+            entity_type: The type of entity to retrieve. Must be a valid name
+                        from list_entity_types() — lowercase, no separators.
+            id: The entity's unique identifier (UUID).
             path_params: Optional path parameters for nested resources.
             org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
@@ -1406,11 +1427,30 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     ) -> dict[str, Any]:
         """List entities of the specified type with optional filtering.
 
+        IMPORTANT: entity_type names are lowercase with NO underscores or hyphens.
+        Use list_entity_types() to discover valid names. Common examples:
+        'project', 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance'
+        (not 'pipeline_instance'), 'sourceconfig', 'filterimage'.
+
+        The filters parameter maps to HTTP query parameters. To find which
+        query parameters a given entity type supports, call
+        get_entity_type_info(['filterpipeline']) and check the 'query_params'
+        field on the 'list' operation.
+
         Args:
-            entity_type: The type of entities to list.
-            filters: Optional query parameters for filtering/pagination
-                    (e.g., {'limit': 10, 'status': 'active'}).
-            path_params: Optional path parameters for nested resources.
+            entity_type: The type of entities to list. Must be a valid name
+                        from list_entity_types() — lowercase, no separators.
+            filters: Optional query parameters for filtering/pagination.
+                    These map to query params on the list endpoint, NOT path
+                    params. Use get_entity_type_info() to discover valid keys.
+                    Examples:
+                      {'project': '<project-id>'}  — filter by project
+                      {'status': 'active', 'limit': 10}
+                      {'project': 'sweetgreen'}  — filter by project name
+            path_params: Optional path parameters for nested resources. Only
+                        needed when the list endpoint has path placeholders
+                        (e.g., {'project_id': 'abc123'}). Most list endpoints
+                        use query params instead — check get_entity_type_info().
             org_id: Optional organization ID for cross-tenant access (Plainsight employees only).
 
         Returns:

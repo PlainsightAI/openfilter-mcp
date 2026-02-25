@@ -333,9 +333,18 @@ How to scope a session:
 4. Use `get_token_status` to check current permissions and expiry.
 5. Use `clear_scoped_token` to revert to the default token (e.g., to request different scopes).
 
-Scope format: "resource:action" where resource is any entity type and action is read, create, update, delete, or * for all actions. Examples: "project:read,deployment:read", "filterpipeline:*,pipelineinstance:*".
+Scope format: "resource:action" where resource is any entity type and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*".
+
+IMPORTANT: Resource names and entity_type values are lowercase with NO underscores or hyphens. Use 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance' (not 'pipeline_instance'), 'sourceconfig' (not 'source_config'). Use list_entity_types() to discover valid names.
+
+When planning scopes, think ahead about the FULL task. If the user asks to "see what's running in my project," you'll need project + filterpipeline + pipelineinstance + filter access — request all of these upfront in a single request_scoped_token call rather than escalating incrementally. This reduces approval fatigue. Only escalate if a genuinely unexpected need arises (e.g., the user asks you to modify something after a read-only investigation).
 
 Always request the narrowest scopes possible. Prefer read-only scopes unless writes are explicitly needed. Do not request wildcard (*) scopes unless the task genuinely requires all actions on a resource.
+
+Tool usage tips:
+- list_entities uses `filters` (not `query_params`) for HTTP query parameters. Example: list_entities('filterpipeline', filters={'project': '<id>'}).
+- Most list endpoints filter by project via query params, not path params. Check get_entity_type_info() to see which params go where.
+- get_entity uses `id` (not `entity_id`) as the parameter name.
 
 Note: By default, all API operations require a scoped token. You MUST call request_scoped_token before any entity operations. This requirement can be relaxed by setting OPF_MCP_ALLOW_UNSCOPED_TOKEN=true, but this is not recommended.
 """.strip()
@@ -653,9 +662,11 @@ def create_mcp_server() -> FastMCP:
                 scopes: Comma-separated list of permission scopes to request.
                     Format: "resource:action" where action is read, create, update, delete, or *.
                     Use "resource:*" for all actions on a resource.
-                    Valid resources are derived from the API spec at startup — use
-                    list_entity_types to discover them.
-                    Examples: "project:read,deployment:read,deployment:create",
+                    IMPORTANT: Resource names are lowercase with NO underscores or
+                    hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
+                    'pipelineinstance' not 'pipeline_instance'. Use
+                    list_entity_types() to discover valid resource names.
+                    Examples: "project:read,filterpipeline:read,pipelineinstance:read",
                              "filterpipeline:*,pipelineinstance:*"
                 name: A name for this token (for identification in the portal).
                 expires_in_hours: How long the token should be valid (default: 1 hour).
@@ -684,7 +695,12 @@ def create_mcp_server() -> FastMCP:
                 if action not in valid_actions:
                     errors.append(f"{s} (unknown action '{action}', expected: {', '.join(sorted(valid_actions))})")
                 elif valid_resources and resource not in valid_resources:
-                    errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
+                    suggestions = registry.suggest_entity(resource, limit=3) if registry else []
+                    if suggestions:
+                        hint = f"did you mean: {', '.join(suggestions)}?"
+                        errors.append(f"{s} (unknown resource '{resource}', {hint})")
+                    else:
+                        errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
             if errors:
                 return {"error": f"Invalid scopes: {errors}"}
 
