@@ -36,7 +36,7 @@ from fastmcp.server.context import Context
 from fastmcp.server.elicitation import AcceptedElicitation
 from mcp.shared.exceptions import McpError
 
-from openfilter_mcp.approval_server import start_approval_server
+from openfilter_mcp.approval_server import ApprovalRegistry, start_approval_server
 from openfilter_mcp.auth import get_auth_token, is_plainsight_employee, read_psctl_token
 from openfilter_mcp.redact import register_sensitive
 
@@ -618,9 +618,10 @@ class EntityToolsHandler:
     Supports cross-tenant access for Plainsight employees via optional org_id parameter.
     """
 
-    def __init__(self, client: httpx.AsyncClient, registry: EntityRegistry):
+    def __init__(self, client: httpx.AsyncClient, registry: EntityRegistry, approval_registry: ApprovalRegistry | None = None):
         self.client = client
         self.registry = registry
+        self.approval_registry = approval_registry
 
     async def _recreate_expired_token(
         self, scoped_meta: dict, ctx: Context
@@ -655,12 +656,21 @@ class EntityToolsHandler:
                 if "Method not found" not in err_msg and "not supported" not in err_msg:
                     raise
                 # Client doesn't support elicitation — fall back to browser approval
-                session = await start_approval_server(
-                    title="Token Renewal",
-                    message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
-                    details={"Token name": token_name, "Scopes": scopes},
-                    timeout_seconds=60,
-                )
+                if self.approval_registry:
+                    session = self.approval_registry.create_session(
+                        title="Token Renewal",
+                        message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
+                        details={"Token name": token_name, "Scopes": scopes},
+                        timeout_seconds=60,
+                        base_url=f"http://localhost:{os.getenv('PORT', '3000')}",
+                    )
+                else:
+                    session = await start_approval_server(
+                        title="Token Renewal",
+                        message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
+                        details={"Token name": token_name, "Scopes": scopes},
+                        timeout_seconds=60,
+                    )
                 await ctx.info(
                     f"Token '{token_name}' expired. Approve renewal at:\n\n  {session.url}"
                 )
@@ -1203,7 +1213,7 @@ class EntityToolsHandler:
         return self.registry.get_entity_info_for(names)
 
 
-def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) -> tuple[EntityRegistry, "EntityToolsHandler"]:
+def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, approval_registry: ApprovalRegistry | None = None) -> tuple[EntityRegistry, "EntityToolsHandler"]:
     """Register entity-based CRUD tools on an MCP server.
 
     Args:
@@ -1217,7 +1227,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) ->
         for building auth headers with scoped token + expiry detection.
     """
     registry = EntityRegistry(openapi_spec)
-    handler = EntityToolsHandler(client, registry)
+    handler = EntityToolsHandler(client, registry, approval_registry=approval_registry)
 
     @mcp.tool()
     def list_entity_types(query: str | None = None) -> list[dict[str, Any]]:
