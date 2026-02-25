@@ -16,6 +16,9 @@ Provides tools for interacting with the Plainsight API and code search:
 Configuration:
     ENABLE_CODE_SEARCH: Set to "true" to enable code search tools (default: "true").
                         Set to "false" to run the server without code search capabilities.
+    REQUIRE_AUTH: Set to "true" to abort startup when no valid auth token is found
+                  (default: "false"). Slim Docker images set this to "true" since they
+                  have no code-search fallback and would otherwise serve zero tools.
 """
 
 import asyncio
@@ -344,9 +347,17 @@ def create_mcp_server() -> FastMCP:
     Returns:
         A FastMCP server instance with entity CRUD tools plus code search tools.
         If no authentication token is available, only code search tools are registered.
+
+    Raises:
+        SystemExit: If REQUIRE_AUTH is set and no valid token is found.
     """
     # Create base MCP server
     mcp = FastMCP(name="OpenFilter MCP", instructions=_SERVER_INSTRUCTIONS)
+
+    # When REQUIRE_AUTH is set (e.g. slim Docker images that have no code-search
+    # fallback), refuse to start if we cannot authenticate -- an unauthenticated
+    # slim server would register zero tools and silently do nothing.
+    require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
 
     # Try to create authenticated client and load OpenAPI tools
     # If no token is available, we'll still create a server with code search tools
@@ -360,9 +371,22 @@ def create_mcp_server() -> FastMCP:
             client = create_authenticated_client()
             openapi_spec = get_openapi_spec()
             has_auth = True
-        except AuthenticationError:
+        except AuthenticationError as exc:
+            if require_auth:
+                raise SystemExit(
+                    "REQUIRE_AUTH is set but authentication failed: "
+                    f"{exc}\n"
+                    "Provide a valid token via OPENFILTER_TOKEN env var "
+                    "or mount a psctl token file."
+                ) from exc
             # Token was available but invalid - proceed without API tools
-            pass
+
+    if require_auth and not has_auth:
+        raise SystemExit(
+            "REQUIRE_AUTH is set but no authentication token was found.\n"
+            "Provide a valid token via OPENFILTER_TOKEN env var "
+            "or mount a psctl token file (~/.config/plainsight/token)."
+        )
 
     # Register entity-based CRUD tools if authenticated
     registry = None
