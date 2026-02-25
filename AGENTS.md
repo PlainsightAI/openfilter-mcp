@@ -43,7 +43,7 @@ You are performing a live demo of scoped token elicitation. Follow these steps i
 - Entity type names and scope resource names are **lowercase with NO underscores or hyphens**: `filterpipeline` (not `filter_pipeline`), `pipelineinstance` (not `pipeline_instance`), `sourceconfig` (not `source_config`). Use `list_entity_types` to verify.
 - `list_entities` uses the `filters` parameter for query-string filtering (e.g., `filters: {"project": "<id>"}`). Do NOT use `query_params` (doesn't exist) or `path_params` (for path placeholders only — most list endpoints don't have them). Check `get_entity_type_info` if unsure.
 - `get_entity` uses `id` as the parameter name (not `entity_id`).
-- To escalate permissions, you must first call `clear_scoped_token`, then call `request_scoped_token` with the new set of scopes. You cannot add scopes incrementally.
+- To escalate permissions, use `request_scoped_token` with `add_scopes` to propose a delta (e.g., `add_scopes: "filterpipeline:update"`). The server merges it with current scopes and presents the full set for approval. No need to call `clear_scoped_token` first or repeat existing scopes. You can also use `scopes` to replace everything, or `remove_scopes` to drop scopes you no longer need.
 - In Claude Code, `request_scoped_token` returns `status: "pending_approval"` with an `approval_url` and `request_id`. Tell the user to open the URL in their browser, then call `await_token_approval` with the `request_id`.
 - In Cursor, the approval dialog appears inline — no URL or `await_token_approval` needed.
 
@@ -71,7 +71,7 @@ Summarize what you found: pipelines, their status, whether they have filter grap
 
 **Step 3 — Escalate to fix (only if something looks off)**
 
-If you spot something that could be improved (e.g., unconfigured pipelines, a typo), explain what you'd like to fix and why, then immediately escalate through the elicitation flow: call `clear_scoped_token`, then `request_scoped_token` with the current read scopes plus the write scope you need (e.g., `project:read,filterpipeline:read,pipelineinstance:read,filter:read,filterpipeline:update`). The user approves or denies through the same approval mechanism — no natural-language back-and-forth needed.
+If you spot something that could be improved (e.g., unconfigured pipelines, a typo), explain what you'd like to fix and why, then immediately escalate through the elicitation flow: call `request_scoped_token` with `add_scopes: "filterpipeline:update"`. The server merges this with your existing read scopes and presents the combined set for approval. The user approves or denies through the same approval mechanism — no need to clear the old token or repeat existing scopes.
 
 If the user denies the escalation, respect it and move on to wrap-up. This demonstrates the read→write boundary using the same elicitation flow, not a separate conversation.
 

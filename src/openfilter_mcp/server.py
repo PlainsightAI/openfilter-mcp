@@ -331,13 +331,15 @@ How to scope a session:
      then call `await_token_approval` with the `request_id` to block until they respond.
 3. Once approved, the scoped token is stored in the session and used automatically for all subsequent API calls.
 4. Use `get_token_status` to check current permissions and expiry.
-5. Use `clear_scoped_token` to revert to the default token (e.g., to request different scopes).
+5. Use `clear_scoped_token` to revert to the default token.
 
 Scope format: "resource:action" where resource is any entity type and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*".
 
 IMPORTANT: Resource names and entity_type values are lowercase with NO underscores or hyphens. Use 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance' (not 'pipeline_instance'), 'sourceconfig' (not 'source_config'). Use list_entity_types() to discover valid names.
 
 When planning scopes, think ahead about the FULL task. If the user asks to "see what's running in my project," you'll need project + filterpipeline + pipelineinstance + filter access — request all of these upfront in a single request_scoped_token call rather than escalating incrementally. This reduces approval fatigue. Only escalate if a genuinely unexpected need arises (e.g., the user asks you to modify something after a read-only investigation).
+
+Escalation via delta: When you need additional scopes beyond what you already have, use `add_scopes` instead of repeating the full set. Example: `request_scoped_token(add_scopes="filterpipeline:update")` to add write access while keeping existing read scopes. Use `remove_scopes` to drop scopes you no longer need. The server merges the delta with your current scopes and presents the full result for approval.
 
 Always request the narrowest scopes possible. Prefer read-only scopes unless writes are explicitly needed. Do not request wildcard (*) scopes unless the task genuinely requires all actions on a resource.
 
@@ -638,7 +640,9 @@ def create_mcp_server() -> FastMCP:
 
         @mcp.tool()
         async def request_scoped_token(
-            scopes: str,
+            scopes: str | None = None,
+            add_scopes: str | None = None,
+            remove_scopes: str | None = None,
             name: str = f"mcp-{_session_id}",
             expires_in_hours: int = 1,
             org_id: str | None = None,
@@ -647,27 +651,47 @@ def create_mcp_server() -> FastMCP:
             """Request a scoped API token with limited permissions for this session.
 
             This creates a new API token with only the permissions you need,
-            replacing the default full-access token for subsequent API calls.
-            The user will be asked to approve the requested scopes via an
-            interactive dialog (elicitation). If your MCP client does not support
-            elicitation, a browser-based approval page is started instead and
-            the tool returns immediately with an approval_url and request_id.
-            You MUST tell the user to open the URL, then call
-            await_token_approval with the request_id to block until they respond.
+            replacing the current token for subsequent API calls. The user will
+            be asked to approve the requested scopes via an interactive dialog
+            (elicitation). If your MCP client does not support elicitation, a
+            browser-based approval page is started instead and the tool returns
+            immediately with an approval_url and request_id. You MUST tell the
+            user to open the URL, then call await_token_approval with the
+            request_id to block until they respond.
 
             You will NOT see the token value — it is stored securely in the
             session and used automatically for subsequent API calls.
 
+            There are two ways to specify scopes:
+
+            1. **Absolute** — pass `scopes` with the full set you need.
+               This replaces any existing token entirely.
+
+            2. **Delta** — pass `add_scopes` and/or `remove_scopes` to modify
+               the current token's scopes. The server reads the active token's
+               scopes, applies the delta, and requests approval for the result.
+               This avoids repeating scopes you already have and makes
+               escalation intent clear. You do NOT need to call
+               clear_scoped_token first when using delta mode.
+
+            If both `scopes` and `add_scopes`/`remove_scopes` are provided,
+            `scopes` takes priority (delta params are ignored).
+
             Args:
-                scopes: Comma-separated list of permission scopes to request.
-                    Format: "resource:action" where action is read, create, update, delete, or *.
-                    Use "resource:*" for all actions on a resource.
-                    IMPORTANT: Resource names are lowercase with NO underscores or
-                    hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
+                scopes: Comma-separated list of permission scopes to request
+                    (replaces all current scopes). Format: "resource:action"
+                    where action is read, create, update, delete, or *.
+                    IMPORTANT: Resource names are lowercase with NO underscores
+                    or hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
                     'pipelineinstance' not 'pipeline_instance'. Use
                     list_entity_types() to discover valid resource names.
                     Examples: "project:read,filterpipeline:read,pipelineinstance:read",
                              "filterpipeline:*,pipelineinstance:*"
+                add_scopes: Comma-separated scopes to ADD to the current token.
+                    Example: "filterpipeline:update" to add write access while
+                    keeping existing read scopes.
+                remove_scopes: Comma-separated scopes to REMOVE from the current
+                    token. Example: "filter:read" to drop a scope you no longer need.
                 name: A name for this token (for identification in the portal).
                 expires_in_hours: How long the token should be valid (default: 1 hour).
                 org_id: Optional organization ID to create the token for. If not provided,
@@ -679,9 +703,25 @@ def create_mcp_server() -> FastMCP:
             if not ctx:
                 return {"error": "This tool requires a session context. Ensure your MCP client provides one."}
 
-            scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
-            if not scope_list:
-                return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
+            # Resolve scope list: absolute mode vs delta mode
+            if scopes is not None:
+                # Absolute mode — use exactly what was provided
+                scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+            elif add_scopes is not None or remove_scopes is not None:
+                # Delta mode — read current scopes and apply changes
+                meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
+                current = set(meta.get("scopes", [])) if meta else set()
+
+                to_add = {s.strip() for s in (add_scopes or "").split(",") if s.strip()}
+                to_remove = {s.strip() for s in (remove_scopes or "").split(",") if s.strip()}
+
+                scope_list = sorted((current | to_add) - to_remove)
+
+                if not scope_list:
+                    return {"error": "Resulting scope set is empty after applying delta. "
+                            f"Current: {sorted(current)}, add: {sorted(to_add)}, remove: {sorted(to_remove)}"}
+            else:
+                return {"error": "Provide either 'scopes' (absolute) or 'add_scopes'/'remove_scopes' (delta)."}
 
             valid_actions = {"read", "create", "update", "delete", "*"}
             valid_resources = set(registry.list_entities()) if registry else set()
