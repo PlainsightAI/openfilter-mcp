@@ -63,13 +63,15 @@ PSCTL_TOKEN_FILENAME = "token"
 # Cached token to avoid file I/O races in concurrent async calls
 _cached_token: Optional[str] = None
 _cached_token_expiry: Optional[datetime] = None
+_cached_token_mtime: Optional[float] = None
 
 
 def _reset_token_cache() -> None:
     """Reset the token cache. Used for testing."""
-    global _cached_token, _cached_token_expiry
+    global _cached_token, _cached_token_expiry, _cached_token_mtime
     _cached_token = None
     _cached_token_expiry = None
+    _cached_token_mtime = None
 
 
 class AuthenticationError(Exception):
@@ -295,11 +297,12 @@ async def refresh_and_get_new_token() -> Optional[str]:
     Returns:
         The new access token string if refresh was successful, None otherwise.
     """
-    global _cached_token, _cached_token_expiry
+    global _cached_token, _cached_token_expiry, _cached_token_mtime
 
     # Clear the cache to force re-read
     _cached_token = None
     _cached_token_expiry = None
+    _cached_token_mtime = None
 
     # Get refresh token from file
     refresh_token = _get_refresh_token_from_file()
@@ -373,14 +376,23 @@ def read_psctl_token() -> Optional[str]:
     Returns:
         The access token string if available and valid, None otherwise.
     """
-    global _cached_token, _cached_token_expiry
-
-    # Return cached token if valid and not expiring soon
-    if _cached_token and _cached_token_expiry:
-        if _cached_token_expiry > datetime.now(timezone.utc) + timedelta(minutes=5):
-            return _cached_token
+    global _cached_token, _cached_token_expiry, _cached_token_mtime
 
     token_path = get_psctl_token_path()
+
+    # Check file mtime to detect external writes (e.g. `psctl login`)
+    try:
+        current_mtime = token_path.stat().st_mtime
+    except OSError:
+        current_mtime = None
+
+    # Return cached token if file hasn't changed and token isn't expiring soon
+    if _cached_token and _cached_token_expiry:
+        if (
+            current_mtime == _cached_token_mtime
+            and _cached_token_expiry > datetime.now(timezone.utc) + timedelta(minutes=5)
+        ):
+            return _cached_token
 
     if not token_path.exists():
         return None
@@ -430,9 +442,10 @@ def read_psctl_token() -> Optional[str]:
                 # If we can't parse expiry, still try to use the token
                 pass
 
-        # Cache the token
+        # Cache the token and file mtime
         _cached_token = access_token
         _cached_token_expiry = expiry
+        _cached_token_mtime = current_mtime
 
         return access_token
 
