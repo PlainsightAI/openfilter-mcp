@@ -160,6 +160,8 @@ def get_entity_spec() -> dict | None:
     """Fetch the entity specification from Plainsight API.
 
     Returns None if the endpoint is unavailable (older API versions).
+    Falls back gracefully on 404 (expected for older versions) but logs
+    server errors (5xx) at error level since they may warrant investigation.
     """
     try:
         response = httpx.get(
@@ -168,9 +170,19 @@ def get_entity_spec() -> dict | None:
         )
         response.raise_for_status()
         return response.json()
-    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            logger.error(
+                "entity-spec endpoint returned server error (falling back to OpenAPI parsing): %s", e
+            )
+        else:
+            logger.warning(
+                "entity-spec endpoint unavailable, falling back to OpenAPI parsing: %s", e
+            )
+        return None
+    except httpx.HTTPError as e:
         logger.warning(
-            "entity-spec endpoint unavailable, falling back to OpenAPI parsing: %s", e
+            "entity-spec endpoint unreachable, falling back to OpenAPI parsing: %s", e
         )
         return None
 

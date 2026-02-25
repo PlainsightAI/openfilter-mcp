@@ -74,7 +74,7 @@ class Entity:
 
     name: str  # Entity name, e.g., "project", "organization"
     description: str  # Human-readable description
-    scope: str = "organization"  # Ownership scope: organization, project, global, public
+    scope: str = "unknown"  # Ownership scope: organization, project, global, public (unknown when from OpenAPI fallback)
     rbac_domain: str = ""  # RBAC authorization domain (defaults to name)
     operations: dict[str, EntityOperation] = field(default_factory=dict)  # op_type -> operation
     # Common schemas for this entity
@@ -97,7 +97,6 @@ class EntityRegistry:
             self._parse_spec()
 
         self._build_search_index()
-
 
     def _parse_from_entity_spec(self, entity_spec: dict):
         """Parse entities from the /entity-spec endpoint response, enriching with OpenAPI schemas."""
