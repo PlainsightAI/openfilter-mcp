@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "openfilter": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:3000/mcp", "--allow-http"]
+    }
+  }
+}
