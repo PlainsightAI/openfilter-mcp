@@ -333,7 +333,7 @@ How to scope a session:
 4. Use `get_token_status` to check current permissions and expiry.
 5. Use `clear_scoped_token` to revert to the default token.
 
-Scope format: "resource:action" where resource is any entity type and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*".
+Scope format: "resource:action" where resource is any entity type (or * for all resources) and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*", "*:read" (read all resources), "*:*" (full access).
 
 IMPORTANT: Resource names and entity_type values are lowercase with NO underscores or hyphens. Use 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance' (not 'pipeline_instance'), 'sourceconfig' (not 'source_config'). Use list_entity_types() to discover valid names.
 
@@ -680,13 +680,15 @@ def create_mcp_server() -> FastMCP:
             Args:
                 scopes: Comma-separated list of permission scopes to request
                     (replaces all current scopes). Format: "resource:action"
-                    where action is read, create, update, delete, or *.
+                    where resource is any entity type or * for all resources,
+                    and action is read, create, update, delete, or *.
                     IMPORTANT: Resource names are lowercase with NO underscores
                     or hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
                     'pipelineinstance' not 'pipeline_instance'. Use
                     list_entity_types() to discover valid resource names.
                     Examples: "project:read,filterpipeline:read,pipelineinstance:read",
-                             "filterpipeline:*,pipelineinstance:*"
+                             "filterpipeline:*,pipelineinstance:*",
+                             "*:read" (read all resources), "*:*" (full access)
                 add_scopes: Comma-separated scopes to ADD to the current token.
                     Example: "filterpipeline:update" to add write access while
                     keeping existing read scopes.
@@ -734,7 +736,7 @@ def create_mcp_server() -> FastMCP:
                 resource, action = parts
                 if action not in valid_actions:
                     errors.append(f"{s} (unknown action '{action}', expected: {', '.join(sorted(valid_actions))})")
-                elif valid_resources and resource not in valid_resources:
+                elif resource != "*" and valid_resources and resource not in valid_resources:
                     suggestions = registry.suggest_entity(resource, limit=3) if registry else []
                     if suggestions:
                         hint = f"did you mean: {', '.join(suggestions)}?"
