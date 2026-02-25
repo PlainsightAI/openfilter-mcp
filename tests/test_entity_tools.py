@@ -950,10 +950,10 @@ class TestEntitySearch:
             assert "**" not in entry["name"]
 
     def test_summary_shape(self, registry):
-        """Each entry has exactly {name, description}."""
+        """Each entry has exactly {name, description, scope}."""
         results = registry.list_entity_summaries()
         for entry in results:
-            assert set(entry.keys()) == {"name", "description"}
+            assert set(entry.keys()) == {"name", "description", "scope"}
 
     def test_all_results_sorted_by_name(self, registry):
         """No-query results are sorted alphabetically by name."""
@@ -1497,3 +1497,187 @@ class TestExpiredTokenHandling:
         # logger.exception is safe because RedactingFilter scrubs token values
         mock_logger.exception.assert_called_once()
         assert "test-token" in mock_logger.exception.call_args[0][1]
+
+
+class TestParseFromEntitySpec:
+    """Tests for EntityRegistry parsing from /entity-spec response."""
+
+    ENTITY_SPEC = {
+        "entities": [
+            {
+                "name": "project",
+                "rbac_domain": "project",
+                "scope": "organization",
+                "description": "Projects that group resources",
+                "operations": [
+                    {"action": "list", "method": "GET", "path": "/projects"},
+                    {"action": "create", "method": "POST", "path": "/projects"},
+                    {"action": "get", "method": "GET", "path": "/projects/{id}"},
+                    {"action": "update", "method": "PATCH", "path": "/projects/{id}"},
+                    {"action": "delete", "method": "DELETE", "path": "/projects/{id}"},
+                ],
+            },
+            {
+                "name": "model",
+                "rbac_domain": "model",
+                "scope": "project",
+                "description": "ML models within a project",
+                "operations": [
+                    {"action": "list", "method": "GET", "path": "/projects/{project_id}/models"},
+                    {"action": "get", "method": "GET", "path": "/models/{id}"},
+                    {"action": "create", "method": "POST", "path": "/projects/{project_id}/models"},
+                ],
+            },
+            {
+                "name": "training",
+                "rbac_domain": "training",
+                "scope": "project",
+                "description": "Model training jobs",
+                "operations": [
+                    {"action": "list", "method": "GET", "path": "/trainings"},
+                    {"action": "cancel", "method": "POST", "path": "/trainings/{id}/cancel"},
+                ],
+            },
+        ]
+    }
+
+    OPENAPI_SPEC = {
+        "paths": {
+            "/projects": {
+                "get": {"operationId": "project-list", "summary": "List projects"},
+                "post": {
+                    "operationId": "project-create",
+                    "summary": "Create project",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+                            }
+                        }
+                    },
+                },
+            },
+            "/projects/{id}": {
+                "get": {
+                    "operationId": "project-get",
+                    "summary": "Get project",
+                    "responses": {"200": {"content": {"application/json": {"schema": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}}}}}},
+                },
+                "patch": {"operationId": "project-update", "summary": "Update project"},
+                "delete": {"operationId": "project-delete", "summary": "Delete project"},
+            },
+            "/projects/{project_id}/models": {
+                "get": {"operationId": "model-list", "summary": "List models"},
+                "post": {
+                    "operationId": "model-create",
+                    "summary": "Create model",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+                            }
+                        }
+                    },
+                },
+            },
+            "/models/{id}": {
+                "get": {"operationId": "model-get", "summary": "Get model"},
+            },
+            "/trainings": {
+                "get": {"operationId": "training-list", "summary": "List trainings"},
+            },
+            "/trainings/{id}/cancel": {
+                "post": {"operationId": "training-cancel", "summary": "Cancel training"},
+            },
+        },
+        "components": {"schemas": {}},
+    }
+
+    def test_basic_parsing(self):
+        """EntityRegistry should parse structured entity-spec response."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+
+        assert "project" in registry.entities
+        assert "model" in registry.entities
+        assert "training" in registry.entities
+
+        project = registry.entities["project"]
+        assert project.scope == "organization"
+        assert project.rbac_domain == "project"
+        assert project.description == "Projects that group resources"
+        assert set(project.operations.keys()) == {"list", "create", "get", "update", "delete"}
+
+    def test_schema_enrichment(self):
+        """Entity operations should be enriched with OpenAPI schemas."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+
+        project = registry.entities["project"]
+        # create operation should have request_schema from OpenAPI
+        assert project.operations["create"].request_schema is not None
+        assert project.create_schema is not None
+        # get operation should have response_schema
+        assert project.operations["get"].response_schema is not None
+        assert project.response_schema is not None
+
+    def test_custom_actions(self):
+        """Non-CRUD actions like cancel should be parsed correctly."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+
+        training = registry.entities["training"]
+        assert "cancel" in training.operations
+        assert training.operations["cancel"].method == "POST"
+        assert training.operations["cancel"].path == "/trainings/{id}/cancel"
+
+    def test_path_params(self):
+        """Path params should be extracted from operation paths."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+
+        model = registry.entities["model"]
+        assert model.operations["list"].path_params == ["project_id"]
+        assert model.scope == "project"
+        assert model.rbac_domain == "model"
+
+    def test_scope_in_summaries(self):
+        """list_entity_summaries should include scope."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+        summaries = registry.list_entity_summaries()
+
+        for summary in summaries:
+            assert "scope" in summary
+            if summary["name"] == "project":
+                assert summary["scope"] == "organization"
+            elif summary["name"] == "model":
+                assert summary["scope"] == "project"
+
+    def test_scope_in_entity_info(self):
+        """get_entity_info_for should include scope and rbac_domain."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=self.ENTITY_SPEC)
+        info = registry.get_entity_info_for(["project"])
+
+        assert "project" in info
+        assert info["project"]["scope"] == "organization"
+        assert info["project"]["rbac_domain"] == "project"
+
+    def test_fallback_when_entity_spec_is_none(self):
+        """Should fall back to OpenAPI parsing when entity_spec is None."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec=None)
+        # Should still have parsed some entities from OpenAPI
+        assert len(registry.entities) > 0
+
+    def test_fallback_when_entity_spec_has_no_entities(self):
+        """Should fall back to OpenAPI parsing when entity_spec has empty entities."""
+        registry = EntityRegistry(self.OPENAPI_SPEC, entity_spec={})
+        assert len(registry.entities) > 0
+
+        registry2 = EntityRegistry(self.OPENAPI_SPEC, entity_spec={"entities": []})
+        assert len(registry2.entities) > 0
+
+    def test_empty_openapi_with_entity_spec(self):
+        """Should handle entity-spec with minimal OpenAPI (no matching paths)."""
+        minimal_openapi = {"paths": {}, "components": {"schemas": {}}}
+        registry = EntityRegistry(minimal_openapi, entity_spec=self.ENTITY_SPEC)
+
+        # Entities should still be created from entity-spec
+        assert "project" in registry.entities
+        # But schemas won't be enriched
+        assert registry.entities["project"].create_schema is None
