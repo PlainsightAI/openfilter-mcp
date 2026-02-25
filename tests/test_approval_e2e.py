@@ -72,12 +72,11 @@ def _make_mock_client() -> AsyncMock:
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.return_value = mock_response
     mock_client.get.return_value = mock_response
-    mock_client.delete.return_value = MagicMock(spec=httpx.Response, status_code=204)
     return mock_client
 
 
 def _make_mock_client_409_then_ok() -> AsyncMock:
-    """Mock client that returns 409 on first POST, 200 on retry."""
+    """Mock client that returns 409 on first POST, 200 on retry with disambiguated name."""
     conflict_response = MagicMock(spec=httpx.Response)
     conflict_response.status_code = 409
     conflict_response.json.return_value = {
@@ -90,20 +89,8 @@ def _make_mock_client_409_then_ok() -> AsyncMock:
     ok_response.status_code = 200
     ok_response.json.return_value = _MOCK_TOKEN_RESPONSE
 
-    # GET /api-tokens returns a list with the conflicting token
-    list_response = MagicMock(spec=httpx.Response)
-    list_response.status_code = 200
-    list_response.json.return_value = [
-        {"id": "tok_old", "name": "openfilter-mcp-agent"},
-    ]
-
-    delete_response = MagicMock(spec=httpx.Response)
-    delete_response.status_code = 204
-
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.side_effect = [conflict_response, ok_response]
-    mock_client.get.return_value = list_response
-    mock_client.delete.return_value = delete_response
     return mock_client
 
 
@@ -342,14 +329,14 @@ class TestWebFallbackInvalidRequestId:
 
 
 # ---------------------------------------------------------------------------
-# Token conflict (409) and server-side revocation tests
+# Token conflict (409) and session-prefixed naming tests
 # ---------------------------------------------------------------------------
 
 
 class TestTokenConflict409:
-    """Test: request_scoped_token handles 409 by deleting old token and retrying."""
+    """Test: request_scoped_token handles 409 by retrying with a disambiguated name."""
 
-    async def test_409_conflict_resolved_by_delete_and_retry(self):
+    async def test_409_conflict_resolved_by_retry_with_new_name(self):
         mock_client = _make_mock_client_409_then_ok()
         server = _make_mcp_server_with_client(mock_client)
 
@@ -361,20 +348,35 @@ class TestTokenConflict409:
             )
 
         assert result.data["status"] == "active"
-        # POST was called twice (409 then retry)
+        # POST was called twice (409 then retry with disambiguated name)
         assert mock_client.post.call_count == 2
-        # GET /api-tokens was called to find the conflicting token
-        mock_client.get.assert_called_once()
-        # DELETE was called to remove the old token
-        mock_client.delete.assert_called_once()
-        delete_url = mock_client.delete.call_args[0][0]
-        assert "tok_old" in delete_url
 
 
-class TestClearScopedTokenRevokes:
-    """Test: clear_scoped_token revokes the token server-side via DELETE."""
+class TestTokenNameIsSessionPrefixed:
+    """Test: default token name includes a session-unique prefix."""
 
-    async def test_clear_revokes_server_side(self, mcp_server: FastMCP):
+    async def test_default_name_contains_mcp_prefix(self):
+        mock_client = _make_mock_client()
+        server = _make_mcp_server_with_client(mock_client)
+
+        client = Client(server, elicitation_handler=_approve_handler)
+        async with client:
+            result = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": "project:read"},
+            )
+
+        assert result.data["status"] == "active"
+        # Verify the POST payload used a name starting with "mcp-"
+        post_call = mock_client.post.call_args
+        payload = post_call.kwargs.get("json") or post_call[1].get("json")
+        assert payload["name"].startswith("mcp-")
+
+
+class TestClearScopedToken:
+    """Test: clear_scoped_token clears local session state."""
+
+    async def test_clear_returns_cleared(self, mcp_server: FastMCP):
         client = Client(mcp_server, elicitation_handler=_approve_handler)
         async with client:
             # First create a scoped token
@@ -388,7 +390,6 @@ class TestClearScopedTokenRevokes:
             clear_result = await client.call_tool("clear_scoped_token", {})
 
         assert clear_result.data["status"] == "cleared"
-        assert "revoked" in clear_result.data["message"]
 
     async def test_clear_without_active_token(self, mcp_server: FastMCP):
         client = Client(mcp_server, elicitation_handler=_approve_handler)
