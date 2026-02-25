@@ -70,13 +70,16 @@ def _render_approval_page(
     detail_rows = []
     for key, value in details.items():
         if isinstance(value, list):
-            escaped_val = "<br>".join(html.escape(str(v)) for v in value)
+            codes = " ".join(f'<code>{html.escape(str(v))}</code>' for v in value)
+            detail_rows.append(
+                f'<tr><th>{html.escape(key)}</th>'
+                f'<td>{codes}</td></tr>'
+            )
         else:
-            escaped_val = html.escape(str(value))
-        detail_rows.append(
-            f'<tr><th>{html.escape(key)}</th>'
-            f'<td><code>{escaped_val}</code></td></tr>'
-        )
+            detail_rows.append(
+                f'<tr><th>{html.escape(key)}</th>'
+                f'<td><code>{html.escape(str(value))}</code></td></tr>'
+            )
     details_html = "\n".join(detail_rows)
 
     return f"""\
