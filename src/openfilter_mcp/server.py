@@ -46,7 +46,7 @@ from openfilter_mcp.auth import (
     TokenRefreshTransport,
 )
 from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY, SESSION_TOKEN_META_KEY, ALLOW_UNSCOPED_TOKEN
-from openfilter_mcp.approval_server import start_approval_server
+from openfilter_mcp.approval_server import register_approval_routes
 from openfilter_mcp.redact import register_sensitive
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
@@ -354,6 +354,9 @@ def create_mcp_server() -> FastMCP:
     # Create base MCP server
     mcp = FastMCP(name="OpenFilter MCP", instructions=_SERVER_INSTRUCTIONS)
 
+    # Register approval routes on the MCP server (reuses port 3000, works in Docker)
+    approval_registry = register_approval_routes(mcp)
+
     # When REQUIRE_AUTH is set (e.g. slim Docker images that have no code-search
     # fallback), refuse to start if we cannot authenticate -- an unauthenticated
     # slim server would register zero tools and silently do nothing.
@@ -393,7 +396,7 @@ def create_mcp_server() -> FastMCP:
     entity_handler = None
     if has_auth and openapi_spec and client:
         entity_spec = get_entity_spec()
-        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec)
+        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec, approval_registry=approval_registry)
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
@@ -708,7 +711,7 @@ def create_mcp_server() -> FastMCP:
                     return {"error": "Cannot determine organization ID from current token."}
 
                 # Client doesn't support elicitation — fall back to browser approval
-                session = await start_approval_server(
+                session = approval_registry.create_session(
                     title="Scoped Token Request",
                     message="The AI agent is requesting a scoped API token with the following permissions.",
                     details={
@@ -716,6 +719,7 @@ def create_mcp_server() -> FastMCP:
                         "Scopes": scope_list,
                         "Expires": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
                     },
+                    base_url=f"http://localhost:{os.getenv('PORT', '3000')}",
                 )
 
                 # Store pending state so await_token_approval can finalize
@@ -885,7 +889,8 @@ def main():
 
     # Create server at runtime (not at import time)
     mcp = create_mcp_server()
-    mcp.run(transport="http", port=3000, host="0.0.0.0")
+    port = int(os.getenv("PORT", "3000"))
+    mcp.run(transport="http", port=port, host="0.0.0.0")
 
 
 if __name__ == "__main__":
