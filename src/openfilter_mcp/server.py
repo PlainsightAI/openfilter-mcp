@@ -539,6 +539,48 @@ def create_mcp_server() -> FastMCP:
     # Token Scoping Tools (available when authenticated)
     # =========================================================================
 
+    async def _revoke_server_token(
+        http_client: httpx.AsyncClient,
+        token_id: str,
+        org_id: str,
+    ) -> bool:
+        """Delete an API token server-side by ID. Returns True on success."""
+        try:
+            resp = await http_client.delete(
+                f"/api-tokens/{token_id}",
+                headers={"X-Scope-OrgID": org_id},
+            )
+            if resp.status_code < 300:
+                logger.info(f"Revoked server-side token: {token_id}")
+                return True
+            logger.warning(f"Failed to revoke token {token_id}: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Failed to revoke token {token_id}: {e}")
+        return False
+
+    async def _delete_token_by_name(
+        http_client: httpx.AsyncClient,
+        name: str,
+        org_id: str,
+    ) -> bool:
+        """Find and delete an API token by name. Returns True if deleted."""
+        try:
+            resp = await http_client.get(
+                "/api-tokens",
+                headers={"X-Scope-OrgID": org_id},
+            )
+            if resp.status_code >= 400:
+                return False
+            tokens = resp.json()
+            if isinstance(tokens, dict):
+                tokens = tokens.get("items", tokens.get("data", []))
+            for tok in tokens:
+                if tok.get("name") == name:
+                    return await _revoke_server_token(http_client, tok["id"], org_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete token by name '{name}': {e}")
+        return False
+
     async def _create_and_activate_token(
         ctx: Context,
         http_client: httpx.AsyncClient,
@@ -555,6 +597,13 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Success dict with status "active", or error dict on failure.
         """
+        # If there's already an active scoped token in this session, revoke it
+        # server-side before creating a new one to avoid 409 name conflicts.
+        old_meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
+        if old_meta and old_meta.get("id"):
+            await _revoke_server_token(http_client, old_meta["id"], effective_org_id)
+
+        org_headers = {"X-Scope-OrgID": effective_org_id}
         response = await http_client.post(
             "/api-tokens",
             json={
@@ -562,8 +611,23 @@ def create_mcp_server() -> FastMCP:
                 "scopes": scope_list,
                 "expires_at": expires_at.isoformat(),
             },
-            headers={"X-Scope-OrgID": effective_org_id},
+            headers=org_headers,
         )
+
+        # Handle 409 Conflict: a token with this name already exists (e.g. from
+        # a previous session that wasn't cleaned up). Delete it and retry once.
+        if response.status_code == 409:
+            logger.info(f"Token name '{name}' already exists, deleting and retrying")
+            await _delete_token_by_name(http_client, name, effective_org_id)
+            response = await http_client.post(
+                "/api-tokens",
+                json={
+                    "name": name,
+                    "scopes": scope_list,
+                    "expires_at": expires_at.isoformat(),
+                },
+                headers=org_headers,
+            )
 
         if response.status_code >= 400:
             try:
@@ -871,7 +935,13 @@ def create_mcp_server() -> FastMCP:
             await ctx.set_state(SESSION_TOKEN_KEY, None)
             await ctx.set_state(SESSION_TOKEN_META_KEY, None)
             if meta:
-                return {"status": "cleared", "message": f"Scoped token '{meta.get('name')}' cleared. Using default server token."}
+                # Revoke the token server-side so it can't be reused and
+                # so the name is freed for future request_scoped_token calls.
+                token_id = meta.get("id")
+                org_id = meta.get("org_id")
+                if token_id and org_id:
+                    await _revoke_server_token(client, token_id, org_id)
+                return {"status": "cleared", "message": f"Scoped token '{meta.get('name')}' cleared and revoked. Using default server token."}
             return {"status": "no_change", "message": "No scoped token was active."}
 
     return mcp
