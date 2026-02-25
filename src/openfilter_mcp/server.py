@@ -156,6 +156,37 @@ def get_openapi_spec() -> dict:
     return sanitize_openapi_spec(spec)
 
 
+def get_entity_spec() -> dict | None:
+    """Fetch the entity specification from Plainsight API.
+
+    Returns None if the endpoint is unavailable (older API versions).
+    Falls back gracefully on 404 (expected for older versions) but logs
+    server errors (5xx) at error level since they may warrant investigation.
+    """
+    try:
+        response = httpx.get(
+            f"{PLAINSIGHT_API_URL}/entity-spec",
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            logger.error(
+                "entity-spec endpoint returned server error (falling back to OpenAPI parsing): %s", e
+            )
+        else:
+            logger.warning(
+                "entity-spec endpoint unavailable, falling back to OpenAPI parsing: %s", e
+            )
+        return None
+    except httpx.HTTPError as e:
+        logger.warning(
+            "entity-spec endpoint unreachable, falling back to OpenAPI parsing: %s", e
+        )
+        return None
+
+
 class SchemaStrippingTransport(httpx.AsyncBaseTransport):
     """Custom transport that strips $schema from JSON responses.
 
@@ -337,7 +368,8 @@ def create_mcp_server() -> FastMCP:
     registry = None
     entity_handler = None
     if has_auth and openapi_spec and client:
-        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec)
+        entity_spec = get_entity_spec()
+        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec)
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)

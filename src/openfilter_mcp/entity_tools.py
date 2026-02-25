@@ -74,6 +74,8 @@ class Entity:
 
     name: str  # Entity name, e.g., "project", "organization"
     description: str  # Human-readable description
+    scope: str = "unknown"  # Ownership scope: organization, project, global, public (unknown when from OpenAPI fallback)
+    rbac_domain: str = ""  # RBAC authorization domain (defaults to name)
     operations: dict[str, EntityOperation] = field(default_factory=dict)  # op_type -> operation
     # Common schemas for this entity
     create_schema: dict | None = None
@@ -84,12 +86,75 @@ class Entity:
 class EntityRegistry:
     """Registry of all entities and their operations, built from OpenAPI spec."""
 
-    def __init__(self, openapi_spec: dict):
+    def __init__(self, openapi_spec: dict, entity_spec: dict | None = None):
         self.spec = openapi_spec
         self.entities: dict[str, Entity] = {}
         self._component_schemas = openapi_spec.get("components", {}).get("schemas", {})
-        self._parse_spec()
+
+        if entity_spec and entity_spec.get("entities"):
+            self._parse_from_entity_spec(entity_spec)
+        else:
+            self._parse_spec()
+
         self._build_search_index()
+
+    def _parse_from_entity_spec(self, entity_spec: dict):
+        """Parse entities from the /entity-spec endpoint response, enriching with OpenAPI schemas."""
+        openapi_paths = self.spec.get("paths", {})
+
+        for entity_data in entity_spec["entities"]:
+            name = entity_data["name"]
+            description = entity_data.get("description", f"API operations for {name}")
+
+            entity = Entity(
+                name=name,
+                description=description,
+                scope=entity_data.get("scope", "organization"),
+                rbac_domain=entity_data.get("rbac_domain", name),
+            )
+
+            for op_data in entity_data.get("operations", []):
+                action = op_data["action"]
+                method = op_data["method"].lower()
+                path = op_data["path"]
+
+                # Look up the OpenAPI operation for schema enrichment
+                openapi_op = openapi_paths.get(path, {}).get(method, {})
+                operation_id = openapi_op.get("operationId", "") if openapi_op else ""
+                summary = openapi_op.get("summary", openapi_op.get("description", ""))
+
+                # Extract schema details from OpenAPI spec (reuse existing methods)
+                request_schema = self._extract_request_schema(openapi_op) if openapi_op else None
+                response_schema = self._extract_response_schema(openapi_op) if openapi_op else None
+                path_params = self._extract_path_params(path)
+                query_params = self._extract_query_params(openapi_op) if openapi_op else {}
+                is_multipart, file_fields = self._extract_multipart_info(openapi_op) if openapi_op else (False, [])
+
+                op = EntityOperation(
+                    method=method.upper(),
+                    path=path,
+                    operation_id=operation_id,
+                    summary=summary or f"{action} {name}",
+                    request_schema=request_schema,
+                    response_schema=response_schema,
+                    path_params=path_params,
+                    query_params=query_params,
+                    is_multipart=is_multipart,
+                    file_fields=file_fields,
+                )
+
+                entity.operations[action] = op
+
+                # Update entity-level schemas for common operations
+                if action == "create" and op.request_schema:
+                    entity.create_schema = op.request_schema
+                elif action == "update" and op.request_schema:
+                    entity.update_schema = op.request_schema
+                elif action == "get" and op.response_schema:
+                    entity.response_schema = op.response_schema
+
+            if entity.operations:
+                self.entities[name] = entity
 
     def _resolve_ref(self, schema: dict, seen: set[str] | None = None) -> dict:
         """Resolve $ref references in a schema, handling circular refs.
@@ -508,10 +573,17 @@ class EntityRegistry:
                 op_info["request_schema"] = op.request_schema
             operations_detail[op_name] = op_info
 
-        return {
+        result = {
             "description": entity.description,
             "operations": operations_detail,
         }
+
+        if entity.scope:
+            result["scope"] = entity.scope
+        if entity.rbac_domain:
+            result["rbac_domain"] = entity.rbac_domain
+
+        return result
 
     def get_entity_info(self) -> dict[str, Any]:
         """Get detailed info about all entities for discovery."""
@@ -572,7 +644,7 @@ class EntityRegistry:
         """
         if query is None:
             return [
-                {"name": name, "description": entity.description}
+                {"name": name, "description": entity.description, "scope": entity.scope}
                 for name, entity in sorted(self.entities.items())
             ]
 
@@ -591,6 +663,7 @@ class EntityRegistry:
             results.append({
                 "name": self._highlight_terms(entity_name, terms),
                 "description": self._highlight_terms(entity.description, terms),
+                "scope": entity.scope,
             })
         return results
 
@@ -1203,20 +1276,23 @@ class EntityToolsHandler:
         return self.registry.get_entity_info_for(names)
 
 
-def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict) -> tuple[EntityRegistry, "EntityToolsHandler"]:
+def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, entity_spec: dict | None = None) -> tuple[EntityRegistry, "EntityToolsHandler"]:
     """Register entity-based CRUD tools on an MCP server.
 
     Args:
         mcp: FastMCP server instance
         client: Authenticated httpx.AsyncClient
         openapi_spec: Parsed OpenAPI specification dict
+        entity_spec: Optional entity specification from /entity-spec endpoint.
+                     When provided, entity discovery uses this structured data
+                     instead of parsing operation IDs heuristically.
 
     Returns:
         Tuple of (EntityRegistry, EntityToolsHandler) — the registry is useful
         for deriving valid scope resources; the handler provides _get_request_headers
         for building auth headers with scoped token + expiry detection.
     """
-    registry = EntityRegistry(openapi_spec)
+    registry = EntityRegistry(openapi_spec, entity_spec=entity_spec)
     handler = EntityToolsHandler(client, registry)
 
     @mcp.tool()

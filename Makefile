@@ -8,7 +8,7 @@ CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
         release.dev release.slim-dev release.prod \
         cloud.slim cloud.full \
-        index index.extract
+        index index.extract smoke
 
 # ─── Help ─────────────────────────────────────────────────────────────────────
 
@@ -85,3 +85,17 @@ release.slim-dev: ## Tag and push a slim-only dev build (→ GAR)
 release.prod: ## Tag and push a production release (→ Docker Hub)
 	@test -n "$(V)" || { echo "Usage: make release.prod V=0.2.0"; exit 1; }
 	git tag v$(V) && git push origin v$(V)
+
+# ─── Smoke Test ───────────────────────────────────────────────────────────────
+
+PS_API_URL ?= http://localhost:8080
+
+smoke: ## Smoke-test entity parsing against a running plainsight-api
+	@curl -sf $(PS_API_URL)/openapi.json >/dev/null 2>&1 || \
+		{ printf "\033[31mError: no plainsight-api at %s\033[0m\n" "$(PS_API_URL)"; \
+		  echo "Start one first:"; \
+		  echo "  cd ../plainsight-api && eval \"\$$(direnv export bash 2>/dev/null)\" && DB_HOST=127.0.0.1 APP_ENV=prod go run ./cmd/api-server"; \
+		  echo "Or override the URL:"; \
+		  echo "  make smoke PS_API_URL=http://host:port"; \
+		  exit 1; }
+	PS_API_URL=$(PS_API_URL) uv run python scripts/smoke_entity_spec.py
