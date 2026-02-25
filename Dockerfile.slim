@@ -24,6 +24,9 @@ STUB
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
+# Fail fast at startup if no auth token is available -- without code search
+# the server would otherwise silently serve zero tools.
+ENV REQUIRE_AUTH=true
 RUN uv sync --no-dev
 RUN rm -rf code-context/
 
