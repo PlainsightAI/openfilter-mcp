@@ -2,6 +2,8 @@ DOCKERHUB_REPO := plainsightai/openfilter-mcp
 PLATFORMS      := linux/amd64,linux/arm64
 VERSION        := $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 SHA            := $(shell git rev-parse --short HEAD)
+PYVER          := $(shell python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null || echo 0.0.0)
+V              ?= $(PYVER)
 GCP_PROJECT    := plainsightai-dev
 CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
 PSCTL_TOKEN    := $(shell psctl token path 2>/dev/null || echo $$HOME/.config/plainsight/token)
@@ -66,8 +68,7 @@ index.extract: ## Extract indexes from published amd64 image
 
 # ─── Cloud Build (manual) ────────────────────────────────────────────────
 
-cloud.slim: ## Submit slim-only Cloud Build (V=0.0.0 for tag)
-	@test -n "$(V)" || { echo "Usage: make cloud.slim V=0.0.0"; exit 1; }
+cloud.slim: ## Submit slim-only Cloud Build (V from pyproject.toml or V=x.y.z)
 	gcloud builds submit \
 		--config=cloudbuild.yaml \
 		--project=$(GCP_PROJECT) \
@@ -75,8 +76,7 @@ cloud.slim: ## Submit slim-only Cloud Build (V=0.0.0 for tag)
 		--substitutions=TAG_NAME=v$(V)-slim-dev,SHORT_SHA=$(SHA),_DRY_RUN=false,_GCS_BUCKET=$(GCP_PROJECT)-build-artifacts \
 		.
 
-cloud.full: ## Submit full Cloud Build (V=0.0.0 for tag)
-	@test -n "$(V)" || { echo "Usage: make cloud.full V=0.0.0"; exit 1; }
+cloud.full: ## Submit full Cloud Build (V from pyproject.toml or V=x.y.z)
 	gcloud builds submit \
 		--config=cloudbuild.yaml \
 		--project=$(GCP_PROJECT) \
@@ -87,15 +87,12 @@ cloud.full: ## Submit full Cloud Build (V=0.0.0 for tag)
 # ─── Release ──────────────────────────────────────────────────────────────────
 
 release.dev: ## Tag and push a dev build (full + slim → GAR)
-	@test -n "$(V)" || { echo "Usage: make release.dev V=0.2.0"; exit 1; }
 	git tag v$(V)-dev && git push origin v$(V)-dev
 
 release.slim-dev: ## Tag and push a slim-only dev build (→ GAR)
-	@test -n "$(V)" || { echo "Usage: make release.slim-dev V=0.2.0"; exit 1; }
 	git tag v$(V)-slim-dev && git push origin v$(V)-slim-dev
 
 release.prod: ## Tag and push a production release (→ Docker Hub)
-	@test -n "$(V)" || { echo "Usage: make release.prod V=0.2.0"; exit 1; }
 	git tag v$(V) && git push origin v$(V)
 
 # ─── Smoke Test ───────────────────────────────────────────────────────────────
