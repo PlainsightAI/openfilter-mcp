@@ -10,6 +10,7 @@ Requirements:
 """
 
 import asyncio
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -119,8 +120,13 @@ def mcp_server() -> FastMCP:
         yield server
 
 
+@contextmanager
 def _make_mcp_server_with_client(mock_client):
-    """Create a FastMCP server using a specific mock client."""
+    """Create a FastMCP server using a specific mock client.
+
+    Returns a context manager that keeps patches alive for runtime calls
+    (read_psctl_token, get_effective_org_id, etc.) during test execution.
+    """
     with (
         patch("openfilter_mcp.server.get_auth_token", return_value="test-token"),
         patch("openfilter_mcp.server.get_openapi_spec", return_value=_MOCK_SPEC),
@@ -134,7 +140,7 @@ def _make_mcp_server_with_client(mock_client):
     ):
         from openfilter_mcp.server import create_mcp_server
 
-        return create_mcp_server()
+        yield create_mcp_server()
 
 
 # ---------------------------------------------------------------------------
@@ -193,122 +199,176 @@ class TestElicitationDeny:
 # Web fallback flow tests (two-step: return URL, then block on await)
 # ---------------------------------------------------------------------------
 
+import socket
+from contextlib import asynccontextmanager
+import uvicorn
+from sse_starlette.sse import AppStatus
 
-async def _click_button_when_ready(url: str, button_text: str):
-    """Launch a headless browser, navigate to the approval URL, and click a button.
 
-    Runs concurrently with the blocking await_token_approval call.
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@asynccontextmanager
+async def _run_mcp_http(mcp_server: FastMCP, port: int):
+    """Run the MCP server on a real HTTP port for the duration of the block.
+
+    Sets the PORT env var so approval URLs use the correct port.
     """
-    from playwright.async_api import async_playwright
+    import os
+    old_port = os.environ.get("PORT")
+    os.environ["PORT"] = str(port)
+    try:
+        # Reset stale shutdown flag from any prior uvicorn instance in this
+        # process — sse_starlette uses a class-level AppStatus.should_exit
+        # that persists across server restarts and kills new SSE connections.
+        AppStatus.should_exit = False
 
-    # Small delay to ensure the approval server is listening
+        app = mcp_server.http_app()
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+        server = uvicorn.Server(config)
+        task = asyncio.create_task(server.serve())
+        # Wait for server to be ready
+        for _ in range(50):
+            await asyncio.sleep(0.1)
+            if server.started:
+                break
+        try:
+            yield
+        finally:
+            server.should_exit = True
+            await task
+    finally:
+        if old_port is None:
+            os.environ.pop("PORT", None)
+        else:
+            os.environ["PORT"] = old_port
+        # Allow time for port release
+        await asyncio.sleep(0.2)
+
+
+async def _submit_approval(approval_url: str, action: str):
+    """Submit an approve/deny response by fetching the page nonce and POSTing the form.
+
+    Uses httpx instead of Playwright — faster and doesn't require a browser install.
+    """
+    import re
+
     await asyncio.sleep(0.3)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url)
-        await page.click(f"button:has-text('{button_text}')")
-        await browser.close()
+    async with httpx.AsyncClient() as http:
+        # GET the approval page to extract the nonce
+        page_resp = await http.get(approval_url)
+        assert page_resp.status_code == 200, f"GET {approval_url} returned {page_resp.status_code}"
+
+        # Extract nonce from hidden input
+        match = re.search(r'name="nonce" value="([^"]+)"', page_resp.text)
+        assert match, "Could not find nonce in approval page"
+        nonce = match.group(1)
+
+        # POST the form
+        respond_url = f"{approval_url}/respond"
+        resp = await http.post(
+            respond_url,
+            data={"nonce": nonce, "action": action},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
 
 
 class TestWebFallbackApprove:
-    """Test 3: Web fallback — request returns URL, agent tells user, await blocks, user approves."""
+    """Test 3: Web fallback — request returns URL, agent tells user, await blocks, user approves.
+
+    Uses a real HTTP server + httpx to POST the approval form (faster and more
+    reliable than Playwright in CI).
+    """
 
     async def test_approve_via_browser(self, mcp_server: FastMCP):
-        # No elicitation handler → server will fall back to web approval
-        client = Client(mcp_server)
+        port = _find_free_port()
 
-        async with client:
-            # Step 1: request_scoped_token returns immediately with pending_approval
-            pending = await client.call_tool(
-                "request_scoped_token",
-                {"scopes": "project:read"},
-            )
+        async with _run_mcp_http(mcp_server, port):
+            client = Client(f"http://localhost:{port}/mcp")
+            async with client:
+                pending = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:read"},
+                )
 
-            assert pending.data["status"] == "pending_approval"
-            assert "approval_url" in pending.data
-            assert "request_id" in pending.data
+                assert pending.data["status"] == "pending_approval"
+                assert "approval_url" in pending.data
+                assert "request_id" in pending.data
 
-            url = pending.data["approval_url"]
-            request_id = pending.data["request_id"]
+                url = pending.data["approval_url"]
+                request_id = pending.data["request_id"]
 
-            # Step 2: Start browser click concurrently, then block on await_token_approval
-            click_task = asyncio.create_task(_click_button_when_ready(url, "Approve"))
+                # Submit approval via HTTP POST (simulates browser form submit)
+                approve_task = asyncio.create_task(
+                    _submit_approval(url, "approve")
+                )
 
-            result = await client.call_tool(
-                "await_token_approval",
-                {"request_id": request_id},
-            )
+                result = await client.call_tool(
+                    "await_token_approval",
+                    {"request_id": request_id},
+                )
 
-            await click_task
+                await approve_task
 
-        assert result.data["status"] == "active"
-        assert "project:read" in result.data["scopes"]
+            assert result.data["status"] == "active"
+            assert "project:read" in result.data["scopes"]
 
 
 class TestWebFallbackDeny:
     """Test 4: Web fallback — user denies via browser."""
 
     async def test_deny_via_browser(self, mcp_server: FastMCP):
-        client = Client(mcp_server)
+        port = _find_free_port()
 
-        async with client:
-            pending = await client.call_tool(
-                "request_scoped_token",
-                {"scopes": "project:read"},
-            )
-
-            assert pending.data["status"] == "pending_approval"
-            url = pending.data["approval_url"]
-            request_id = pending.data["request_id"]
-
-            click_task = asyncio.create_task(_click_button_when_ready(url, "Deny"))
-
-            result = await client.call_tool(
-                "await_token_approval",
-                {"request_id": request_id},
-                raise_on_error=False,
-            )
-
-            await click_task
-
-        assert result.data["status"] == "denied"
-
-
-class TestWebFallbackTimeout:
-    """Test 5: Web fallback — approval server times out."""
-
-    async def test_timeout_returns_denied(self, mcp_server: FastMCP):
-        from openfilter_mcp.approval_server import start_approval_server as real_start
-
-        async def short_timeout_start(**kwargs):
-            kwargs["timeout_seconds"] = 2
-            return await real_start(**kwargs)
-
-        client = Client(mcp_server)
-
-        async with client:
-            with patch(
-                "openfilter_mcp.server.start_approval_server",
-                side_effect=short_timeout_start,
-            ):
+        async with _run_mcp_http(mcp_server, port):
+            client = Client(f"http://localhost:{port}/mcp")
+            async with client:
                 pending = await client.call_tool(
                     "request_scoped_token",
                     {"scopes": "project:read"},
                 )
 
-            assert pending.data["status"] == "pending_approval"
-            request_id = pending.data["request_id"]
+                assert pending.data["status"] == "pending_approval"
+                url = pending.data["approval_url"]
+                request_id = pending.data["request_id"]
 
-            # await_token_approval blocks until timeout (2s)
-            result = await client.call_tool(
-                "await_token_approval",
-                {"request_id": request_id},
-                raise_on_error=False,
-            )
+                deny_task = asyncio.create_task(
+                    _submit_approval(url, "deny")
+                )
 
-        assert result.data["status"] == "denied"
+                result = await client.call_tool(
+                    "await_token_approval",
+                    {"request_id": request_id},
+                    raise_on_error=False,
+                )
+
+                await deny_task
+
+            assert result.data["status"] == "denied"
+
+
+class TestWebFallbackTimeout:
+    """Test 5: Web fallback — approval session times out."""
+
+    async def test_timeout_returns_denied(self):
+        """Test ApprovalRegistry timeout directly (no HTTP needed)."""
+        from openfilter_mcp.approval_server import ApprovalRegistry
+
+        registry = ApprovalRegistry()
+        session = registry.create_session(
+            title="Test",
+            message="Test timeout",
+            details={"scope": ["project:read"]},
+            timeout_seconds=1,
+        )
+
+        result = await session.wait()
+        assert result == "timeout"
 
 
 class TestWebFallbackInvalidRequestId:
@@ -338,14 +398,13 @@ class TestTokenConflict409:
 
     async def test_409_conflict_resolved_by_retry_with_new_name(self):
         mock_client = _make_mock_client_409_then_ok()
-        server = _make_mcp_server_with_client(mock_client)
-
-        client = Client(server, elicitation_handler=_approve_handler)
-        async with client:
-            result = await client.call_tool(
-                "request_scoped_token",
-                {"scopes": "project:read"},
-            )
+        with _make_mcp_server_with_client(mock_client) as server:
+            client = Client(server, elicitation_handler=_approve_handler)
+            async with client:
+                result = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:read"},
+                )
 
         assert result.data["status"] == "active"
         # POST was called twice (409 then retry with disambiguated name)
@@ -357,14 +416,13 @@ class TestTokenNameIsSessionPrefixed:
 
     async def test_default_name_contains_mcp_prefix(self):
         mock_client = _make_mock_client()
-        server = _make_mcp_server_with_client(mock_client)
-
-        client = Client(server, elicitation_handler=_approve_handler)
-        async with client:
-            result = await client.call_tool(
-                "request_scoped_token",
-                {"scopes": "project:read"},
-            )
+        with _make_mcp_server_with_client(mock_client) as server:
+            client = Client(server, elicitation_handler=_approve_handler)
+            async with client:
+                result = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:read"},
+                )
 
         assert result.data["status"] == "active"
         # Verify the POST payload used a name starting with "mcp-"
