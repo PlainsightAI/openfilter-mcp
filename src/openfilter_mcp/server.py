@@ -341,7 +341,15 @@ When planning scopes, think ahead about the FULL task. If the user asks to "see 
 
 Escalation via delta: When you need additional scopes beyond what you already have, use `add_scopes` instead of repeating the full set. Example: `request_scoped_token(add_scopes="filterpipeline:update")` to add write access while keeping existing read scopes. Use `remove_scopes` to drop scopes you no longer need. The server merges the delta with your current scopes and presents the full result for approval.
 
-Always request the narrowest scopes possible. Prefer read-only scopes unless writes are explicitly needed. Do not request wildcard (*) scopes unless the task genuinely requires all actions on a resource.
+Choosing the right scope breadth — security vs. autonomy:
+
+Narrower scopes protect against accidental modifications, but overly narrow scopes cause repeated approval prompts that slow the user down and create approval fatigue. The right scope set depends on the task:
+
+- **Quick, focused task** (e.g., "check if pipeline X is running"): request only the specific scopes needed — `filterpipeline:read,pipelineinstance:read`.
+- **Broad investigation or long-running session** (e.g., "audit everything in my project"): request wider read scopes upfront — `*:read` or a broad set of resource types — so you can explore freely without re-prompting.
+- **Tasks likely to involve writes**: if the user's intent clearly implies modifications (e.g., "fix the misconfigured pipeline"), request both read AND write scopes for the relevant resources upfront rather than forcing a separate escalation.
+
+As a guideline: prefer the scope set that lets you complete the user's stated goal with a single approval. Avoid wildcard write scopes (`*:*`, `*:update`) unless the task genuinely requires broad write access. When in doubt, lean toward slightly broader read scopes and narrower write scopes — reads are low-risk, writes deserve more scrutiny.
 
 Tool usage tips:
 - list_entities uses `filters` (not `query_params`) for HTTP query parameters. Example: list_entities('filterpipeline', filters={'project': '<id>'}).

@@ -5,8 +5,8 @@
 AI agents need API access to do useful work, but giving them your full credentials is a security risk. We built scoped token elicitation — the agent analyzes the user's goal, plans what permissions it needs upfront, and requests them all in a single approval. The user explicitly approves access to a subset of their permissions — not for specific tool calls, but for specific operations on specific types of resources — and the agent never sees the token.
 
 This gives customers:
-- **Least-privilege access** for every AI interaction
-- **Reduced approval fatigue** — one approval per task, not one per API call
+- **Right-sized permissions** — broad enough that the agent works autonomously, narrow enough that mistakes stay contained
+- **Reduced approval fatigue** — one approval per task, not one per API call; the agent plans scopes upfront based on task scale
 - **Auditability** — every token has named scopes and a short TTL
 - **A clear read→write boundary** — the agent MUST ask before crossing it
 
@@ -86,7 +86,7 @@ Then call `clear_scoped_token` to clean up.
 
 ### What to point out during the demo
 
-- **Plan-ahead scoping** — the agent analyzed the goal and requested all needed permissions upfront, reducing approval fatigue to a single interaction
+- **Plan-ahead scoping** — the agent analyzed the goal's scale and requested permissions broad enough to work autonomously but no broader, reducing approval fatigue to a single interaction
 - **One prompt, one approval** — the user gave a single goal; the agent figured out permissions and asked once
 - **Agent never sees the token** — scoped tokens are stored in the MCP session and used automatically
 - **User stays in control** — every permission grant requires explicit approval; the agent can't silently escalate
