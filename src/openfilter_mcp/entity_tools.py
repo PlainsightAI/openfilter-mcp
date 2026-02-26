@@ -545,20 +545,22 @@ class EntityRegistry:
     def suggest_entity(self, name: str, limit: int = 3) -> list[str]:
         """Suggest entity names for a misspelled/incorrectly-formatted name.
 
-        Uses the FTS index to find close matches. Handles common mistakes like
-        underscores (filter_pipeline → filterpipeline) and hyphens.
+        Uses tantivy's fuzzy query support (Levenshtein distance ≤ 2 with
+        transposition cost of 1) against the entity metadata index. Handles
+        separators (underscores, hyphens), transposition typos, and missing
+        or extra characters.
         """
         # Normalize: strip separators so "filter_pipeline" becomes "filterpipeline"
-        normalized = name.replace("_", "").replace("-", "")
-        if normalized in self.entities:
-            return [normalized]
-
-        # Try FTS with the original name (split on separators for multi-word search)
-        query_str = name.replace("_", " ").replace("-", " ")
+        normalized = name.replace("_", "").replace("-", "").lower()
         try:
             searcher = self._search_index.searcher()
-            parsed_query = self._search_index.parse_query(query_str, ["corpus"])
-            results = searcher.search(parsed_query, limit=limit)
+            parsed, _errors = self._search_index.parse_query_lenient(
+                normalized,
+                ["corpus"],
+                fuzzy_fields={"corpus": (True, 2, True)},
+                conjunction_by_default=False,
+            )
+            results = searcher.search(parsed, limit=limit)
             return [searcher.doc(addr)["entity_name"][0] for _score, addr in results.hits]
         except Exception:
             return []
