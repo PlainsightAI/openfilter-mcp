@@ -89,7 +89,7 @@ cloud.full: ## Submit full Cloud Build (V from pyproject.toml or V=x.y.z)
 release.dev: ## Tag and push a dev build (full + slim → GAR)
 	git tag v$(V)-dev && git push origin v$(V)-dev
 
-release.slim-dev: ## Tag and push a slim-only dev build (→ GAR)
+release.slim.dev: ## Tag and push a slim-only dev build (→ GAR)
 	git tag v$(V)-slim-dev && git push origin v$(V)-slim-dev
 
 release.prod: ## Tag and push a production release (→ Docker Hub)
