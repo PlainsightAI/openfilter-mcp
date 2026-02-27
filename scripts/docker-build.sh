@@ -17,12 +17,14 @@ TAG_NAME="${TAG_NAME:-}"
 DOCKERFILE=""
 TAG_SUFFIX=""
 LATEST_TAG=""
+PLATFORM="linux/amd64,linux/arm64"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dockerfile) DOCKERFILE="$2"; shift 2 ;;
     --tag-suffix) TAG_SUFFIX="$2"; shift 2 ;;
     --latest-tag) LATEST_TAG="$2"; shift 2 ;;
+    --platform) PLATFORM="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -144,7 +146,7 @@ fi
 echo "Building with tags: ${TAGS}"
 # shellcheck disable=SC2086
 DOCKER_CONFIG=/builder/home/.docker docker buildx build \
-  --platform linux/amd64,linux/arm64 \
+  --platform "${PLATFORM}" \
   ${TAGS} \
   ${PUSH_FLAG} \
   -f "${DOCKERFILE}" .

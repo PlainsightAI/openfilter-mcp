@@ -73,7 +73,7 @@ steps:
       - |
         SLIM_ONLY="${_SLIM_ONLY}"; if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
         if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping full build"; exit 0; fi
-        bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest"
+        bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest" --platform linux/amd64
 
   # Step 3: Slim Docker build (no code-context, no indexes, no ML deps)
   - name: 'gcr.io/cloud-builders/docker'
