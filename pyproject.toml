@@ -31,10 +31,13 @@ name = "llama-cpp-python-cpu"
 url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
 explicit = true
 
+[tool.uv]
+config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
+
 [tool.uv.sources]
 code-context = { path = "./code-context" }
 llama-cpp-python = [
-    { index = "llama-cpp-python-cpu", marker = "sys_platform == 'linux'" },
+    { git = "https://github.com/abetlen/llama-cpp-python", marker = "sys_platform == 'linux'" },
     { index = "llama-cpp-python-metal", marker = "sys_platform == 'darwin'" },
 ]
 

@@ -1,24 +1,46 @@
-FROM python:3.12-slim
+# Stage 1: Build llama-cpp-python from source with CUDA support
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
 
 RUN apt-get update && apt-get install -y git curl gcc g++ && rm -rf /var/lib/apt/lists/*
+RUN uv python install 3.12
 
 WORKDIR /app
-
-# Copy lockfile + manifest first (cache deps layer when only source changes)
 COPY pyproject.toml README.md ./
 COPY code-context/ code-context/
 
-# Install deps first (cached unless pyproject.toml or uv.lock change)
-ENV CMAKE_ARGS="-DGGML_CUDA=off"
-RUN uv sync --no-dev --group code-search --no-install-workspace
+# Build from source with CUDA (uses root pyproject.toml git source + cmake args)
+RUN uv sync --python 3.12 --no-dev --group code-search --no-install-workspace
 
-# Now copy source + data (these layers invalidate on content changes)
+# Stage 2: Slim runtime with CUDA runtime libs only
+# Use debian:bookworm-slim + uv python install so the interpreter path matches
+# the builder stage — this lets us COPY the .venv without uv recreating it.
+FROM debian:bookworm-slim
+COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
+
+RUN apt-get update && apt-get install -y git curl libgomp1 && rm -rf /var/lib/apt/lists/*
+RUN uv python install 3.12
+
+# Copy CUDA runtime libs from the builder (only what llama-cpp needs at runtime)
+COPY --from=builder /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcudart.so* /usr/local/lib/
+COPY --from=builder /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcublas.so* /usr/local/lib/
+COPY --from=builder /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcublasLt.so* /usr/local/lib/
+RUN ldconfig
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY code-context/ code-context/
+
+# Copy the pre-built venv from stage 1 (includes CUDA-enabled llama-cpp-python)
+# Works because both stages use `uv python install 3.12` → same interpreter path.
+COPY --from=builder /app/.venv /app/.venv
+
+# Copy source + data
 COPY src/ src/
 COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
-# Install the workspace package itself
+# Install workspace package (uses existing venv, just links the project)
 RUN uv sync --no-dev --group code-search
 
 CMD ["uv", "run", "--no-sync", "serve"]
