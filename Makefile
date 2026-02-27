@@ -11,7 +11,7 @@ DOCKER_CACHE   ?=
 
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
         run.slim run.full \
-        release.dev release.slim-dev release.prod \
+        release.dev release.slim.dev release.prod \
         cloud.slim cloud.full \
         index index.extract smoke
 

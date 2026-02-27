@@ -397,6 +397,12 @@ class ApprovalSession:
         logger.info("Approval session %s resolved: %s", self.session_id, result)
         return result
 
+    def cancel(self, result: str = "cancelled") -> None:
+        """Cancel this session, resolving the future with *result*."""
+        if not self._future.done():
+            self._future.set_result(result)
+        self._timeout_task.cancel()
+
 
 # ============================================================================
 # ApprovalRegistry — manages sessions, provides Starlette route handlers

@@ -809,9 +809,7 @@ def create_mcp_server() -> FastMCP:
                 mcp_session_id = ctx.session_id
                 existing = _pending_approvals.get(mcp_session_id)
                 if existing:
-                    fut = existing["session"]._future
-                    if not fut.done():
-                        fut.set_result("cancelled")
+                    existing["session"].cancel("cancelled")
                     logger.info("Cancelled previous pending approval for session %s", mcp_session_id)
 
                 # Store pending state so await_token_approval can finalize
