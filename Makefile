@@ -7,6 +7,7 @@ V              ?= $(PYVER)
 GCP_PROJECT    := plainsightai-dev
 CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
 PSCTL_TOKEN    := $(shell psctl token path 2>/dev/null || echo $$HOME/.config/plainsight/token)
+DOCKER_CACHE   ?=
 
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
         run.slim run.full \
@@ -29,28 +30,32 @@ test: ## Run tests
 # ─── Build ────────────────────────────────────────────────────────────────────
 
 build.slim: ## Build slim Docker image (no ML deps, ~370MB)
-	docker build --no-cache -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
+	docker build $(DOCKER_CACHE) -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
 
 build.full: indexes ## Build full Docker image (with code search indexes)
-	docker build --no-cache -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
+	docker build $(DOCKER_CACHE) -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
 
 indexes: ## Ensure indexes exist (extract from published image if missing)
 	@test -d indexes || $(MAKE) index.extract
 
 build.run.slim: build.slim ## Build and run slim image (with auth)
 	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
 	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):slim
 
 build.run.full: build.full ## Build and run full image (with auth)
 	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
 	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):full
 
 run.slim: ## Run published slim image (with auth)
 	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
 	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest-slim
 
 run.full: ## Run published full image (with auth)
 	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
 	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest
 
 # ─── Index ────────────────────────────────────────────────────────────────────

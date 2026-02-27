@@ -1,0 +1,36 @@
+# Virtual environments
+.venv/
+__pycache__/
+
+# Git
+.git/
+.gitignore
+
+# Editor configs
+.claude/
+.cursor/
+.vscode/
+
+# Tests & dev files
+tests/
+scripts/
+docs/
+*.md
+!README.md
+
+# Docker
+Dockerfile*
+.dockerignore
+Makefile
+
+# Build artifacts
+data/
+*.egg-info/
+dist/
+build/
+
+# CI / config
+.github/
+cloudbuild.yaml
+.pre-commit-config.yaml
+.pytest_cache/

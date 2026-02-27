@@ -56,13 +56,13 @@ logger = logging.getLogger(__name__)
 
 # code-context is an optional dependency (install with `uv sync --group code-search`)
 try:
-    from code_context.indexing import INDEXES_DIR
-    from code_context.main import _get_chunk, _search_index
+    from code_context.indexing import INDEXES_DIR  # pyright: ignore[reportMissingImports]
+    from code_context.main import _get_chunk, _search_index  # pyright: ignore[reportMissingImports]
 
     HAS_CODE_CONTEXT = True
 except ImportError:
-    INDEXES_DIR = None
-    HAS_CODE_CONTEXT = False
+    INDEXES_DIR = None  # pyright: ignore[reportConstantRedefinition]
+    HAS_CODE_CONTEXT = False  # pyright: ignore[reportConstantRedefinition]
 
 
 # =============================================================================
@@ -70,7 +70,7 @@ except ImportError:
 # =============================================================================
 
 
-def sanitize_openapi_spec(spec: dict) -> dict:
+def sanitize_openapi_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """Sanitize OpenAPI spec for MCP compatibility.
 
     Removes properties with invalid names (MCP requires ^[a-zA-Z0-9_-]{1,64}$).
@@ -85,7 +85,7 @@ def sanitize_openapi_spec(spec: dict) -> dict:
 
     valid_pattern = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
-    def clean_schema(schema: dict) -> dict:
+    def clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(schema, dict):
             return schema
 
@@ -137,7 +137,7 @@ def strip_schema_from_response(data: Any) -> Any:
         return data
 
 
-def get_openapi_spec() -> dict:
+def get_openapi_spec() -> dict[str, Any]:
     """Fetch the OpenAPI specification from Plainsight API.
 
     Returns:
@@ -159,7 +159,7 @@ def get_openapi_spec() -> dict:
     return sanitize_openapi_spec(spec)
 
 
-def get_entity_spec() -> dict | None:
+def get_entity_spec() -> dict[str, Any] | None:
     """Fetch the entity specification from Plainsight API.
 
     Returns None if the endpoint is unavailable (older API versions).
@@ -434,21 +434,21 @@ def create_mcp_server() -> FastMCP:
             """Searches a semantic index for code matching a natural language description.
 
             Returns the top_k most relevant chunks with their scores and metadata."""
-            return _search_index(latest_index_name, query, "nl2code", top_k)
+            return _search_index(latest_index_name, query, "nl2code", top_k)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def search_code(code_query: str, top_k: int = 10) -> Dict[str, Any]:
             """Searches a semantic index for code similar to the provided code snippet.
 
             Returns the top_k most relevant chunks with their scores and metadata."""
-            return _search_index(latest_index_name, code_query, "code2code", top_k)
+            return _search_index(latest_index_name, code_query, "code2code", top_k)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def get_chunk(chunk_id: int) -> Dict[str, Any]:
             """Retrieves the content and metadata of a specific chunk by its ID.
 
             Returns: JSON object with filepath, startLine, endLine, and content."""
-            return _get_chunk(latest_index_name, chunk_id)
+            return _get_chunk(latest_index_name, chunk_id)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def read_file(filepath: str, start_line: int = 0, line_count: int = 100) -> str:
@@ -644,6 +644,8 @@ def create_mcp_server() -> FastMCP:
     # Pending web-based approvals: request_id -> {session, scope_list, name, ...}
     _pending_approvals: Dict[str, Any] = {}
 
+    _MAX_PENDING_APPROVALS = 50
+
     if has_auth and client:
 
         @mcp.tool()
@@ -717,6 +719,8 @@ def create_mcp_server() -> FastMCP:
             if scopes is not None:
                 # Absolute mode — use exactly what was provided
                 scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+                if not scope_list:
+                    return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
             elif add_scopes is not None or remove_scopes is not None:
                 # Delta mode — read current scopes and apply changes
                 meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
@@ -783,6 +787,9 @@ def create_mcp_server() -> FastMCP:
                 effective_org_id = org_id
                 if not effective_org_id:
                     token = read_psctl_token() or get_auth_token()
+                    if not token:
+                        return {"error": "No authentication token available."}
+                    effective_org_id = get_effective_org_id(token)
                     effective_org_id = get_effective_org_id(token)
                 if not effective_org_id:
                     return {"error": "Cannot determine organization ID from current token."}
@@ -796,8 +803,12 @@ def create_mcp_server() -> FastMCP:
                         "Scopes": scope_list,
                         "Expires": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
                     },
-                    base_url=f"http://localhost:{os.getenv('PORT', '3000')}",
+                    base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
                 )
+
+                # Guard against unbounded pending approvals
+                if len(_pending_approvals) >= _MAX_PENDING_APPROVALS:
+                    return {"error": "Too many pending approval requests. Please complete or wait for existing ones to expire."}
 
                 # Store pending state so await_token_approval can finalize
                 import secrets
@@ -831,6 +842,9 @@ def create_mcp_server() -> FastMCP:
             effective_org_id = org_id
             if not effective_org_id:
                 token = read_psctl_token() or get_auth_token()
+                if not token:
+                    return {"error": "No authentication token available."}
+                effective_org_id = get_effective_org_id(token)
                 effective_org_id = get_effective_org_id(token)
             if not effective_org_id:
                 return {"error": "Cannot determine organization ID from current token."}
@@ -962,6 +976,7 @@ def create_mcp_server() -> FastMCP:
 def main():
     # Ensure necessary directories exist
     if HAS_CODE_CONTEXT:
+        assert INDEXES_DIR is not None
         os.makedirs(INDEXES_DIR, exist_ok=True)
 
     # Create server at runtime (not at import time)

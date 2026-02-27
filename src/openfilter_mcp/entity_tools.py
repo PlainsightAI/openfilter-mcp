@@ -60,10 +60,10 @@ class EntityOperation:
     path: str  # URL path template, e.g., "/projects/{id}"
     operation_id: str  # OpenAPI operation ID
     summary: str  # Human-readable summary
-    request_schema: dict | None = None  # JSON Schema for request body
-    response_schema: dict | None = None  # JSON Schema for response
+    request_schema: dict[str, Any] | None = None  # JSON Schema for request body
+    response_schema: dict[str, Any] | None = None  # JSON Schema for response
     path_params: list[str] = field(default_factory=list)  # Path parameter names
-    query_params: dict[str, dict] = field(default_factory=dict)  # Query param schemas
+    query_params: dict[str, dict[str, Any]] = field(default_factory=dict)  # Query param schemas
     is_multipart: bool = False  # True if this operation uses multipart/form-data
     file_fields: list[str] = field(default_factory=list)  # Field names for file uploads
 
@@ -78,15 +78,15 @@ class Entity:
     rbac_domain: str = ""  # RBAC authorization domain (defaults to name)
     operations: dict[str, EntityOperation] = field(default_factory=dict)  # op_type -> operation
     # Common schemas for this entity
-    create_schema: dict | None = None
-    update_schema: dict | None = None
-    response_schema: dict | None = None
+    create_schema: dict[str, Any] | None = None
+    update_schema: dict[str, Any] | None = None
+    response_schema: dict[str, Any] | None = None
 
 
 class EntityRegistry:
     """Registry of all entities and their operations, built from OpenAPI spec."""
 
-    def __init__(self, openapi_spec: dict, entity_spec: dict | None = None):
+    def __init__(self, openapi_spec: dict[str, Any], entity_spec: dict[str, Any] | None = None):
         self.spec = openapi_spec
         self.entities: dict[str, Entity] = {}
         self._component_schemas = openapi_spec.get("components", {}).get("schemas", {})
@@ -98,7 +98,7 @@ class EntityRegistry:
 
         self._build_search_index()
 
-    def _parse_from_entity_spec(self, entity_spec: dict):
+    def _parse_from_entity_spec(self, entity_spec: dict[str, Any]):
         """Parse entities from the /entity-spec endpoint response, enriching with OpenAPI schemas."""
         openapi_paths = self.spec.get("paths", {})
 
@@ -156,7 +156,7 @@ class EntityRegistry:
             if entity.operations:
                 self.entities[name] = entity
 
-    def _resolve_ref(self, schema: dict, seen: set[str] | None = None) -> dict:
+    def _resolve_ref(self, schema: dict[str, Any], seen: set[str] | None = None) -> dict[str, Any]:
         """Resolve $ref references in a schema, handling circular refs.
 
         Args:
@@ -248,13 +248,13 @@ class EntityRegistry:
             if last in EntityRegistry._SINGULARIZE_EXCEPTIONS:
                 parts[-1] = EntityRegistry._SINGULARIZE_EXCEPTIONS[last]
             else:
-                singular = _inflect_engine.singular_noun(last)
+                singular = _inflect_engine.singular_noun(last)  # pyright: ignore[reportArgumentType]
                 if singular:
                     parts[-1] = singular
             return "_".join(parts)
         if word in EntityRegistry._SINGULARIZE_EXCEPTIONS:
             return EntityRegistry._SINGULARIZE_EXCEPTIONS[word]
-        singular = _inflect_engine.singular_noun(word)
+        singular = _inflect_engine.singular_noun(word)  # pyright: ignore[reportArgumentType]
         if singular:
             return singular
         return word
@@ -385,7 +385,7 @@ class EntityRegistry:
 
         return None
 
-    def _extract_request_schema(self, operation: dict) -> dict | None:
+    def _extract_request_schema(self, operation: dict[str, Any]) -> dict[str, Any] | None:
         """Extract request body schema from operation."""
         request_body = operation.get("requestBody", {})
         content = request_body.get("content", {})
@@ -403,7 +403,7 @@ class EntityRegistry:
 
         return None
 
-    def _extract_multipart_info(self, operation: dict) -> tuple[bool, list[str]]:
+    def _extract_multipart_info(self, operation: dict[str, Any]) -> tuple[bool, list[str]]:
         """Check if operation uses multipart/form-data and extract file field names."""
         request_body = operation.get("requestBody", {})
         content = request_body.get("content", {})
@@ -423,7 +423,7 @@ class EntityRegistry:
 
         return True, file_fields
 
-    def _extract_response_schema(self, operation: dict) -> dict | None:
+    def _extract_response_schema(self, operation: dict[str, Any]) -> dict[str, Any] | None:
         """Extract success response schema from operation."""
         responses = operation.get("responses", {})
 
@@ -442,7 +442,7 @@ class EntityRegistry:
         """Extract path parameter names from path template."""
         return re.findall(r"\{([^}]+)\}", path)
 
-    def _extract_query_params(self, operation: dict) -> dict[str, dict]:
+    def _extract_query_params(self, operation: dict[str, Any]) -> dict[str, dict[str, Any]]:
         """Extract query parameters and their schemas."""
         params = {}
         for param in operation.get("parameters", []):
@@ -728,7 +728,7 @@ class EntityToolsHandler:
         self.approval_registry = approval_registry
 
     async def _recreate_expired_token(
-        self, scoped_meta: dict, ctx: Context
+        self, scoped_meta: dict[str, Any], ctx: Context
     ) -> str | None:
         """Attempt to re-create an expired scoped token with user re-approval.
 
@@ -766,9 +766,13 @@ class EntityToolsHandler:
                         message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
                         details={"Token name": token_name, "Scopes": scopes},
                         timeout_seconds=60,
-                        base_url=f"http://localhost:{os.getenv('PORT', '3000')}",
+                        base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
                     )
                 else:
+                    logger.warning(
+                        "approval_registry not available — falling back to legacy standalone approval server. "
+                        "This will NOT work in Docker. Set approval_registry on EntityTools to fix."
+                    )
                     session = await start_approval_server(
                         title="Token Renewal",
                         message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
@@ -792,6 +796,7 @@ class EntityToolsHandler:
             if org_id:
                 post_headers["X-Scope-OrgID"] = org_id
 
+            import secrets as _secrets
             response = await self.client.post(
                 "/api-tokens",
                 json={
@@ -801,6 +806,20 @@ class EntityToolsHandler:
                 },
                 headers=post_headers if post_headers else None,
             )
+
+            # Handle 409 Conflict: token name already exists (e.g. crashed session)
+            if response.status_code == 409:
+                token_name = f"{token_name}-{_secrets.token_hex(2)}"
+                logger.info(f"Token name conflict during renewal, retrying as '{token_name}'")
+                response = await self.client.post(
+                    "/api-tokens",
+                    json={
+                        "name": token_name,
+                        "scopes": scopes,
+                        "expires_at": expires_at.isoformat(),
+                    },
+                    headers=post_headers if post_headers else None,
+                )
 
             if response.status_code >= 400:
                 logger.warning(
@@ -844,7 +863,7 @@ class EntityToolsHandler:
             logger.exception("Error during scoped token renewal for '%s'", token_name)
             return None
 
-    def _validate_schema(self, data: dict, schema: dict | None, context: str) -> list[str]:
+    def _validate_schema(self, data: dict[str, Any], schema: dict[str, Any] | None, context: str) -> list[str]:
         """Validate data against JSON schema, returning list of errors."""
         if not schema:
             return []
@@ -867,7 +886,7 @@ class EntityToolsHandler:
         # Use format_map with a custom dict that tracks missing keys
         missing = []
 
-        class TrackingDict(dict):
+        class TrackingDict(dict[str, Any]):
             def __missing__(self, key):
                 missing.append(key)
                 return f"{{{key}}}"  # Keep placeholder for error message
@@ -984,7 +1003,7 @@ class EntityToolsHandler:
     async def create(
         self,
         entity_type: str,
-        data: dict,
+        data: dict[str, Any],
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
@@ -1112,7 +1131,7 @@ class EntityToolsHandler:
         self,
         entity_type: str,
         id: str,
-        data: dict,
+        data: dict[str, Any],
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
@@ -1206,7 +1225,7 @@ class EntityToolsHandler:
         entity_type: str,
         action: str,
         id: str | None = None,
-        data: dict | None = None,
+        data: dict[str, Any] | None = None,
         path_params: dict[str, str] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
@@ -1300,7 +1319,7 @@ class EntityToolsHandler:
 
 
 
-def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, entity_spec: dict | None = None, approval_registry: ApprovalRegistry | None = None) -> tuple[EntityRegistry, "EntityToolsHandler"]:
+def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict[str, Any], entity_spec: dict[str, Any] | None = None, approval_registry: ApprovalRegistry | None = None) -> tuple[EntityRegistry, "EntityToolsHandler"]:
     """Register entity-based CRUD tools on an MCP server.
 
     Args:
@@ -1368,8 +1387,8 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     @mcp.tool()
     async def create_entity(
         entity_type: str,
-        data: dict,
-        path_params: dict | None = None,
+        data: dict[str, Any],
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -1396,7 +1415,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     async def get_entity(
         entity_type: str,
         id: str,
-        path_params: dict | None = None,
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -1422,8 +1441,8 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     @mcp.tool()
     async def list_entities(
         entity_type: str,
-        filters: dict | None = None,
-        path_params: dict | None = None,
+        filters: dict[str, Any] | None = None,
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -1464,8 +1483,8 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     async def update_entity(
         entity_type: str,
         id: str,
-        data: dict,
-        path_params: dict | None = None,
+        data: dict[str, Any],
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -1487,7 +1506,7 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
     async def delete_entity(
         entity_type: str,
         id: str,
-        path_params: dict | None = None,
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -1509,8 +1528,8 @@ def register_entity_tools(mcp, client: httpx.AsyncClient, openapi_spec: dict, en
         entity_type: str,
         action: str,
         id: str | None = None,
-        data: dict | None = None,
-        path_params: dict | None = None,
+        data: dict[str, Any] | None = None,
+        path_params: dict[str, Any] | None = None,
         org_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:

@@ -10,6 +10,7 @@ Requirements:
 """
 
 import asyncio
+import os
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -455,3 +456,165 @@ class TestClearScopedToken:
             result = await client.call_tool("clear_scoped_token", {})
 
         assert result.data["status"] == "no_change"
+
+
+# ---------------------------------------------------------------------------
+# Delta scope mode tests (add_scopes / remove_scopes)
+# ---------------------------------------------------------------------------
+
+
+class TestDeltaScopeMode:
+    """Test: request_scoped_token with add_scopes/remove_scopes delta mode."""
+
+    async def test_add_scopes_to_existing_token(self, mcp_server: FastMCP):
+        """Create a token, then use add_scopes to expand permissions."""
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            # First create a base token
+            result1 = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": "project:read"},
+            )
+            assert result1.data["status"] == "active"
+
+            # Now add a scope using delta mode
+            result2 = await client.call_tool(
+                "request_scoped_token",
+                {"add_scopes": "project:create"},
+            )
+            assert result2.data["status"] == "active"
+            assert "project:read" in result2.data["scopes"]
+            assert "project:create" in result2.data["scopes"]
+
+    async def test_remove_scopes_from_existing_token(self, mcp_server: FastMCP):
+        """Create a token with multiple scopes, then remove one."""
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            result1 = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": "project:read,project:create"},
+            )
+            assert result1.data["status"] == "active"
+
+            result2 = await client.call_tool(
+                "request_scoped_token",
+                {"remove_scopes": "project:create"},
+            )
+            assert result2.data["status"] == "active"
+            assert "project:read" in result2.data["scopes"]
+            assert "project:create" not in result2.data["scopes"]
+
+    async def test_delta_empty_result_returns_error(self, mcp_server: FastMCP):
+        """Removing all scopes via delta mode returns an error."""
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            result1 = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": "project:read"},
+            )
+            assert result1.data["status"] == "active"
+
+            result2 = await client.call_tool(
+                "request_scoped_token",
+                {"remove_scopes": "project:read"},
+                raise_on_error=False,
+            )
+            assert "error" in result2.data
+
+    async def test_no_scopes_param_returns_error(self, mcp_server: FastMCP):
+        """Calling with neither scopes nor add_scopes/remove_scopes returns error."""
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            result = await client.call_tool(
+                "request_scoped_token",
+                {},
+                raise_on_error=False,
+            )
+            assert "error" in result.data
+
+
+# ---------------------------------------------------------------------------
+# Empty scopes validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyScopesValidation:
+    """Test: scopes="" produces an error, not a zero-permission token."""
+
+    async def test_empty_scopes_string_returns_error(self, mcp_server: FastMCP):
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            result = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": ""},
+                raise_on_error=False,
+            )
+            assert "error" in result.data
+            assert "No scopes" in result.data["error"]
+
+    async def test_whitespace_only_scopes_returns_error(self, mcp_server: FastMCP):
+        client = Client(mcp_server, elicitation_handler=_approve_handler)
+        async with client:
+            result = await client.call_tool(
+                "request_scoped_token",
+                {"scopes": " , , "},
+                raise_on_error=False,
+            )
+            assert "error" in result.data
+
+
+# ---------------------------------------------------------------------------
+# _recreate_expired_token via approval_registry tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecreateExpiredTokenApproval:
+    """Test: _recreate_expired_token uses approval_registry when elicitation fails."""
+
+    async def test_recreate_via_approval_registry(self):
+        """When elicitation is unsupported, _recreate_expired_token falls back to approval_registry."""
+        from mcp.shared.exceptions import McpError
+        from mcp.types import ErrorData
+        from openfilter_mcp.approval_server import ApprovalRegistry
+        from openfilter_mcp.entity_tools import EntityToolsHandler, EntityRegistry
+
+        registry = ApprovalRegistry()
+        mock_client = _make_mock_client()
+        entity_registry = EntityRegistry({
+            "openapi": "3.1.0",
+            "info": {"title": "Test", "version": "1.0.0"},
+            "paths": {"/projects": {"get": {"operationId": "list_projects", "summary": "List", "responses": {"200": {"description": "OK"}}}}},
+        })
+        handler = EntityToolsHandler(mock_client, entity_registry, approval_registry=registry)
+
+        scoped_meta = {
+            "name": "test-renewal",
+            "scopes": ["project:read"],
+            "org_id": "test-org",
+        }
+
+        # Mock ctx that raises McpError on elicit (simulates unsupported client)
+        ctx = AsyncMock()
+        ctx.info = AsyncMock()
+        ctx.set_state = AsyncMock()
+        ctx.get_state = AsyncMock(return_value=None)
+        ctx.elicit = AsyncMock(
+            side_effect=McpError(ErrorData(code=-32601, message="Method not found"))
+        )
+
+        # Approve in background after a short delay
+        async def approve_after_delay():
+            await asyncio.sleep(0.5)
+            # Get the session_id and nonce from the registry internals
+            session_ids = list(registry._sessions.keys())
+            assert len(session_ids) == 1
+            session_id = session_ids[0]
+            entry = registry._sessions[session_id]
+            registry.submit_response(session_id, entry["nonce"], "approve")
+
+        approve_task = asyncio.create_task(approve_after_delay())
+        new_token = await handler._recreate_expired_token(scoped_meta, ctx)
+        await approve_task
+
+        assert new_token == _MOCK_TOKEN_RESPONSE["token"]
+
