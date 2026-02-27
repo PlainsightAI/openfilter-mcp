@@ -618,3 +618,107 @@ class TestRecreateExpiredTokenApproval:
 
         assert new_token == _MOCK_TOKEN_RESPONSE["token"]
 
+
+
+# ---------------------------------------------------------------------------
+# Per-session auto-cancel tests
+# ---------------------------------------------------------------------------
+
+
+class TestPendingApprovalAutoCancel:
+    """Test: second request_scoped_token call auto-cancels the first pending approval."""
+
+    async def test_second_request_cancels_first(self, mcp_server: FastMCP):
+        """Two sequential requests from same session; first is cancelled, second is pending."""
+        port = _find_free_port()
+
+        async with _run_mcp_http(mcp_server, port):
+            client = Client(f"http://localhost:{port}/mcp")
+            async with client:
+                # First request — returns pending_approval
+                pending1 = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:read"},
+                )
+
+                assert pending1.data["status"] == "pending_approval"
+                request_id_1 = pending1.data["request_id"]
+                url1 = pending1.data["approval_url"]
+
+                # Start awaiting the first request in background
+                await_task_1 = asyncio.create_task(
+                    client.call_tool(
+                        "await_token_approval",
+                        {"request_id": request_id_1},
+                        raise_on_error=False,
+                    )
+                )
+
+                # Give the await task a moment to start waiting
+                await asyncio.sleep(0.1)
+
+                # Second request from same session — auto-cancels the first
+                pending2 = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:create"},
+                )
+
+                assert pending2.data["status"] == "pending_approval"
+                request_id_2 = pending2.data["request_id"]
+                assert request_id_1 != request_id_2
+
+                # First request should now return cancelled
+                result1 = await await_task_1
+
+                assert result1.data["status"] == "cancelled"
+                assert "superseded" in result1.data["message"]
+
+                # Second request is still pending (no one approved it yet)
+                # Clean up by denying the second request
+                url2 = pending2.data["approval_url"]
+                await _submit_approval(url2, "deny")
+
+    async def test_cancelled_request_id_returns_cancelled(self, mcp_server: FastMCP):
+        """Explicitly call await_token_approval on old request_id after second request."""
+        port = _find_free_port()
+
+        async with _run_mcp_http(mcp_server, port):
+            client = Client(f"http://localhost:{port}/mcp")
+            async with client:
+                # First request
+                pending1 = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:read"},
+                )
+
+                request_id_1 = pending1.data["request_id"]
+                url1 = pending1.data["approval_url"]
+
+                # Start awaiting the first request in background
+                await_task_1 = asyncio.create_task(
+                    client.call_tool(
+                        "await_token_approval",
+                        {"request_id": request_id_1},
+                        raise_on_error=False,
+                    )
+                )
+
+                # Give the await task a moment to start waiting
+                await asyncio.sleep(0.1)
+
+                # Second request auto-cancels the first
+                pending2 = await client.call_tool(
+                    "request_scoped_token",
+                    {"scopes": "project:create"},
+                )
+
+                request_id_2 = pending2.data["request_id"]
+                url2 = pending2.data["approval_url"]
+
+                # First request should return cancelled
+                result1 = await await_task_1
+
+                assert result1.data["status"] == "cancelled"
+
+                # Clean up second request
+                await _submit_approval(url2, "deny")
