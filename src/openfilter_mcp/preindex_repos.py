@@ -6,6 +6,7 @@ import os
 import time
 import git
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from code_context.indexing import index_repository_direct
@@ -73,17 +74,25 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
     print(f"Created monorepo directory: {MONOREPO_CLONE_DIR}")
 
     cloned_repos_count = 0
-    for repo_url in repos:
+    
+    def _clone_one(repo_url):
+        """Clone a single repository and return True on success, False on error."""
         repo_name = os.path.basename(repo_url).replace(".git", "")
         clone_path = os.path.join(MONOREPO_CLONE_DIR, repo_name)
         print(f"Cloning {repo_url} into {clone_path}...")
         try:
             git.Repo.clone_from(repo_url, clone_path)
             print(f"Successfully cloned {repo_name}.")
-            cloned_repos_count += 1
+            return True
         except Exception as e:
             print(f"Error cloning {repo_url}: {e}")
-
+            return False
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_clone_one, repo_url): repo_url for repo_url in repos}
+        for future in as_completed(futures):
+            if future.result():
+                cloned_repos_count += 1
     if cloned_repos_count > 0:
         print(f"All repositories cloned. Now indexing the monorepo: {MONOREPO_CLONE_DIR}")
         try:

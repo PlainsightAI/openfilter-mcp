@@ -9,16 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-# coding agents
+# coding agents (ignore personal configs)
 .gemini/
 .claude/
-
-# local stuff
-clones/
-indexes/
-openfilter_repos_clones/
-# in case of symlinks
-clones
-indexes
-openfilter_repos_clones
-uv.lock
+.cursor/

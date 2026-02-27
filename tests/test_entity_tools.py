@@ -1681,3 +1681,128 @@ class TestParseFromEntitySpec:
         assert "project" in registry.entities
         # But schemas won't be enriched
         assert registry.entities["project"].create_schema is None
+
+
+# ---------------------------------------------------------------------------
+# Suggest entity (fuzzy matching) tests
+# ---------------------------------------------------------------------------
+
+# Spec with entity names resembling production (concatenated, no separators)
+# so we can test fuzzy matching against realistic names.
+_FUZZY_SPEC = {
+    "openapi": "3.0.0",
+    "info": {"title": "Test API", "version": "1.0.0"},
+    "components": {"schemas": {}},
+    "paths": {
+        **{
+            f"/{name}s": {
+                "get": {
+                    "operationId": f"list_{name}s",
+                    "summary": f"List {name}s",
+                    "responses": {"200": {"description": "OK"}},
+                },
+            }
+            for name in [
+                "project",
+                "organization",
+                "filterpipeline",
+                "pipelineinstance",
+                "sourceconfig",
+                "filter",
+                "filterimage",
+                "recording",
+                "syntheticvideo",
+                "apitoken",
+                "model",
+                "training",
+            ]
+        },
+    },
+}
+
+
+class TestSuggestEntity:
+    """Tests for EntityRegistry.suggest_entity fuzzy matching."""
+
+    @pytest.fixture
+    def registry(self):
+        return EntityRegistry(_FUZZY_SPEC)
+
+    # -- Underscore / hyphen separator handling --
+
+    def test_underscore_filter_pipeline(self, registry):
+        assert "filterpipeline" in registry.suggest_entity("filter_pipeline")
+
+    def test_underscore_source_config(self, registry):
+        assert "sourceconfig" in registry.suggest_entity("source_config")
+
+    def test_underscore_filter_image(self, registry):
+        assert "filterimage" in registry.suggest_entity("filter_image")
+
+    def test_underscore_api_token(self, registry):
+        assert "apitoken" in registry.suggest_entity("api_token")
+
+    def test_underscore_pipeline_instance(self, registry):
+        assert "pipelineinstance" in registry.suggest_entity("pipeline_instance")
+
+    def test_underscore_synthetic_video(self, registry):
+        assert "syntheticvideo" in registry.suggest_entity("synthetic_video")
+
+    def test_hyphen_filter_pipeline(self, registry):
+        assert "filterpipeline" in registry.suggest_entity("filter-pipeline")
+
+    def test_hyphen_source_config(self, registry):
+        assert "sourceconfig" in registry.suggest_entity("source-config")
+
+    # -- Transposition typos --
+
+    def test_typo_transposition_project(self, registry):
+        assert "project" in registry.suggest_entity("proejct")
+
+    def test_typo_transposition_filter(self, registry):
+        assert "filter" in registry.suggest_entity("filtre")
+
+    def test_typo_transposition_recording(self, registry):
+        assert "recording" in registry.suggest_entity("recroding")
+
+    # -- Missing letter typos --
+
+    def test_typo_missing_letter_sourceconfig(self, registry):
+        assert "sourceconfig" in registry.suggest_entity("souceconfig")
+
+    def test_typo_missing_letter_project(self, registry):
+        assert "project" in registry.suggest_entity("projet")
+
+    # -- Exact match (should still work) --
+
+    def test_exact_match(self, registry):
+        assert "project" in registry.suggest_entity("project")
+
+    def test_exact_match_long(self, registry):
+        assert "filterpipeline" in registry.suggest_entity("filterpipeline")
+
+    # -- No match for totally unrelated input --
+
+    def test_no_match_garbage(self, registry):
+        results = registry.suggest_entity("zzzzzzzzz")
+        assert "project" not in results
+
+    # -- Limit parameter --
+
+    def test_limit_respected(self, registry):
+        results = registry.suggest_entity("filter", limit=1)
+        assert len(results) <= 1
+
+    # -- unknown_entity_error integration --
+
+    def test_unknown_entity_error_includes_suggestions(self, registry):
+        err = registry.unknown_entity_error("filter_pipeline")
+        assert "did_you_mean" in err
+        assert "filterpipeline" in err["did_you_mean"]
+
+    def test_unknown_entity_error_includes_hint_for_single(self, registry):
+        err = registry.unknown_entity_error("source_config")
+        suggestions = err.get("did_you_mean", [])
+        if len(suggestions) == 1:
+            assert "hint" in err
+            assert "sourceconfig" in err["hint"]

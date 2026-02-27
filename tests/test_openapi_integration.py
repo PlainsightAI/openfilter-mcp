@@ -114,15 +114,16 @@ class TestMCPServerCreation:
 
     def test_create_mcp_server_without_token_still_works(self):
         """Should create MCP server without token (no OpenAPI tools, no polling)."""
-        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
-            with patch(
-                "openfilter_mcp.server.get_latest_index_name",
-                return_value="test-index",
-            ):
-                from openfilter_mcp.server import create_mcp_server
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "false"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+                with patch(
+                    "openfilter_mcp.server.get_latest_index_name",
+                    return_value="test-index",
+                ):
+                    from openfilter_mcp.server import create_mcp_server
 
-                # This should NOT raise an exception
-                mcp = create_mcp_server()
+                    # This should NOT raise an exception
+                    mcp = create_mcp_server()
 
         tool_names = _get_tool_names(mcp)
 
@@ -138,6 +139,55 @@ class TestMCPServerCreation:
 
         # Polling tool should NOT be available (requires auth)
         assert "poll_until_change" not in tool_names
+
+    def test_create_mcp_server_require_auth_fails_without_token(self):
+        """Should raise SystemExit when REQUIRE_AUTH=true and no token is available."""
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+                from openfilter_mcp.server import create_mcp_server
+
+                with pytest.raises(SystemExit, match="REQUIRE_AUTH is set"):
+                    create_mcp_server()
+
+    def test_create_mcp_server_require_auth_fails_on_invalid_token(self):
+        """Should raise SystemExit when REQUIRE_AUTH=true and token is invalid."""
+        # Import AuthenticationError from server module to ensure class identity
+        # matches the except clause (avoids beartype import-hook mismatch).
+        from openfilter_mcp.server import AuthenticationError
+
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value="bad-token"):
+                with patch(
+                    "openfilter_mcp.server.create_authenticated_client",
+                    side_effect=AuthenticationError("token expired"),
+                ):
+                    from openfilter_mcp.server import create_mcp_server
+
+                    with pytest.raises(SystemExit, match="authentication failed"):
+                        create_mcp_server()
+
+    def test_create_mcp_server_require_auth_succeeds_with_token(self):
+        """Should start normally when REQUIRE_AUTH=true and a valid token exists."""
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {},
+        }
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value="good-token"):
+                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
+                    with patch("openfilter_mcp.server.get_openapi_spec", return_value=mock_spec):
+                        with patch(
+                            "openfilter_mcp.server.get_latest_index_name",
+                            return_value="test-index",
+                        ):
+                            from openfilter_mcp.server import create_mcp_server
+
+                            # Should NOT raise
+                            mcp = create_mcp_server()
+
+        tool_names = _get_tool_names(mcp)
+        assert "list_entity_types" in tool_names
 
     def test_create_mcp_server_registers_entity_tools(self):
         """Should create MCP server with entity CRUD tools from OpenAPI spec."""

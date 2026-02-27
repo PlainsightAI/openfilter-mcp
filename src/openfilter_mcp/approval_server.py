@@ -1,18 +1,23 @@
-"""Lightweight local web server for token approval when MCP elicitation is unavailable.
+"""Browser-based token approval when MCP elicitation is unavailable.
 
 When an MCP client (e.g., Claude Code) does not support the elicitation protocol,
-this module spins up a temporary HTTP server on localhost that presents an approval
-dialog to the user. The server shuts down immediately after the user responds or
-a timeout expires.
+we serve an approval page on the same HTTP port as the MCP server using FastMCP's
+``custom_route`` decorator.  This avoids opening random ports that are unreachable
+when the server runs inside Docker.
 
 Usage::
 
-    result = await request_approval_via_browser(
+    # At server creation time:
+    registry = register_approval_routes(mcp)
+
+    # When approval is needed:
+    session = registry.create_session(
         title="Scoped Token Request",
-        message="The AI agent is requesting a scoped API token.",
-        details={"Token name": "my-token", "Scopes": ["project:read"]},
-        timeout_seconds=120,
+        message="Approve these scopes?",
+        details={"Scopes": ["project:read"]},
     )
+    # session.url  →  http://localhost:3000/approve/<session_id>
+    result = await session.wait()
     # result is "approve" | "deny" | "timeout"
 """
 
@@ -20,11 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import html
-import json
 import logging
-import socket
+import secrets
 from typing import Any
-from urllib.parse import parse_qs
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ def _render_approval_page(
     message: str,
     details: dict[str, Any],
     nonce: str,
+    action_url: str,
 ) -> str:
     """Render the approval HTML page with Plainsight branding + Bulma CSS."""
 
@@ -66,13 +70,16 @@ def _render_approval_page(
     detail_rows = []
     for key, value in details.items():
         if isinstance(value, list):
-            escaped_val = "<br>".join(html.escape(str(v)) for v in value)
+            codes = " ".join(f'<code>{html.escape(str(v))}</code>' for v in value)
+            detail_rows.append(
+                f'<tr><th>{html.escape(key)}</th>'
+                f'<td>{codes}</td></tr>'
+            )
         else:
-            escaped_val = html.escape(str(value))
-        detail_rows.append(
-            f'<tr><th>{html.escape(key)}</th>'
-            f'<td><code>{escaped_val}</code></td></tr>'
-        )
+            detail_rows.append(
+                f'<tr><th>{html.escape(key)}</th>'
+                f'<td><code>{html.escape(str(value))}</code></td></tr>'
+            )
     details_html = "\n".join(detail_rows)
 
     return f"""\
@@ -232,12 +239,12 @@ def _render_approval_page(
       </table>
     </div>
     <div class="card-footer-bar">
-      <form method="POST" action="/respond" style="display:inline">
+      <form method="POST" action="{html.escape(action_url)}" style="display:inline">
         <input type="hidden" name="nonce" value="{html.escape(nonce)}">
         <input type="hidden" name="action" value="deny">
         <button type="submit" class="button is-medium btn-deny">Deny</button>
       </form>
-      <form method="POST" action="/respond" style="display:inline">
+      <form method="POST" action="{html.escape(action_url)}" style="display:inline">
         <input type="hidden" name="nonce" value="{html.escape(nonce)}">
         <input type="hidden" name="action" value="approve">
         <button type="submit" class="button is-medium btn-approve">Approve</button>
@@ -337,37 +344,29 @@ def _render_response_page(action: str) -> str:
 </html>"""
 
 
-def _find_free_port() -> int:
-    """Find a free TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# ============================================================================
+# ApprovalSession — handle for a pending approval
+# ============================================================================
 
 
 class ApprovalSession:
-    """Handle for a running approval server.
+    """Handle for a pending approval request.
 
     Attributes:
-        url: The localhost URL to present to the user.
+        url: The URL to present to the user (on the MCP server's port).
+        session_id: Unique identifier for this approval session.
     """
 
-    def __init__(self, url: str, future: asyncio.Future[str], server: asyncio.AbstractServer, timeout: int):
+    def __init__(self, url: str, session_id: str, future: asyncio.Future[str], timeout: int):
         self.url = url
+        self.session_id = session_id
         self._future = future
-        self._server = server
         self._timeout = timeout
         self._on_timeout: list[callable] = []
-        # Start a background timeout that auto-resolves the future,
-        # so callers using the non-blocking pattern (_future.done()) also
-        # see timeout without needing to call wait().
         self._timeout_task = asyncio.create_task(self._auto_timeout())
 
     def add_timeout_callback(self, callback: callable) -> None:
-        """Register a callback to invoke when the session times out.
-
-        Callbacks are called synchronously (not awaited) after the server
-        shuts down.  Useful for cleaning up external references to this session.
-        """
+        """Register a callback to invoke when the session times out."""
         self._on_timeout.append(callback)
 
     async def _auto_timeout(self):
@@ -376,9 +375,7 @@ class ApprovalSession:
             await asyncio.sleep(self._timeout)
             if not self._future.done():
                 self._future.set_result("timeout")
-                self._server.close()
-                await self._server.wait_closed()
-                logger.info("Approval server timed out and shut down")
+                logger.info("Approval session %s timed out", self.session_id)
                 for cb in self._on_timeout:
                     try:
                         cb()
@@ -397,10 +394,160 @@ class ApprovalSession:
             result = await self._future
         finally:
             self._timeout_task.cancel()
-            self._server.close()
-            await self._server.wait_closed()
-        logger.info("Approval server shut down (result: %s)", result)
+        logger.info("Approval session %s resolved: %s", self.session_id, result)
         return result
+
+    def cancel(self, result: str = "cancelled") -> None:
+        """Cancel this session, resolving the future with *result*."""
+        if not self._future.done():
+            self._future.set_result(result)
+        self._timeout_task.cancel()
+
+
+# ============================================================================
+# ApprovalRegistry — manages sessions, provides Starlette route handlers
+# ============================================================================
+
+
+class ApprovalRegistry:
+    """Registry of pending approval sessions, served via FastMCP custom routes.
+
+    Call :meth:`create_session` to start a new approval flow.  The approval
+    page is served at ``/approve/<session_id>`` on the same port as the MCP
+    server, so it works inside Docker without publishing extra ports.
+    """
+
+    def __init__(self):
+        # session_id → {nonce, future, html_bytes}
+        self._sessions: dict[str, dict[str, Any]] = {}
+
+    def create_session(
+        self,
+        title: str,
+        message: str,
+        details: dict[str, Any],
+        timeout_seconds: int = 120,
+        base_url: str = "",
+    ) -> ApprovalSession:
+        """Create a new approval session.
+
+        Args:
+            title: Dialog title.
+            message: Explanatory text.
+            details: Key-value pairs for the detail table.
+            timeout_seconds: Auto-deny after this many seconds.
+            base_url: Base URL prefix for the approval page (e.g. "http://localhost:3000").
+                      If empty, the URL will be a relative path.
+
+        Returns:
+            An :class:`ApprovalSession` whose ``.url`` can be shown to the user.
+        """
+        session_id = secrets.token_urlsafe(12)
+        nonce = secrets.token_urlsafe(16)
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        approve_path = f"/approve/{session_id}"
+        action_url = f"{approve_path}/respond"
+        page_url = f"{base_url}{approve_path}" if base_url else approve_path
+
+        approval_html = _render_approval_page(title, message, details, nonce, action_url)
+
+        self._sessions[session_id] = {
+            "nonce": nonce,
+            "future": future,
+            "html_bytes": approval_html.encode("utf-8"),
+        }
+
+        session = ApprovalSession(page_url, session_id, future, timeout_seconds)
+
+        # Clean up the registry entry on timeout or resolution
+        def cleanup(sid=session_id):
+            self._sessions.pop(sid, None)
+
+        session.add_timeout_callback(cleanup)
+        future.add_done_callback(lambda f, sid=session_id: self._sessions.pop(sid, None))
+
+        logger.info("Approval session created: %s → %s", session_id, page_url)
+        return session
+
+    def get_session_html(self, session_id: str) -> bytes | None:
+        """Get the pre-rendered approval page HTML for a session."""
+        entry = self._sessions.get(session_id)
+        return entry["html_bytes"] if entry else None
+
+    def submit_response(self, session_id: str, nonce: str, action: str) -> str | None:
+        """Submit an approve/deny response for a session.
+
+        Returns:
+            The action string if accepted, or None if the session/nonce is invalid.
+        """
+        entry = self._sessions.get(session_id)
+        if not entry:
+            return None
+        if entry["nonce"] != nonce:
+            return None
+        if action not in ("approve", "deny"):
+            return None
+
+        future = entry["future"]
+        if not future.done():
+            future.set_result(action)
+
+        return action
+
+
+def register_approval_routes(mcp) -> ApprovalRegistry:
+    """Register ``/approve/{session_id}`` routes on a FastMCP server.
+
+    Must be called during server creation (before ``mcp.run()``).
+
+    Args:
+        mcp: The FastMCP server instance.
+
+    Returns:
+        An :class:`ApprovalRegistry` to create approval sessions at runtime.
+    """
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse
+
+    registry = ApprovalRegistry()
+
+    @mcp.custom_route("/approve/{session_id}", methods=["GET"])
+    async def approval_page(request: Request) -> HTMLResponse:
+        session_id = request.path_params["session_id"]
+        html_bytes = registry.get_session_html(session_id)
+        if html_bytes is None:
+            return HTMLResponse(
+                _render_response_page("timeout"),
+                status_code=404,
+            )
+        return HTMLResponse(html_bytes)
+
+    @mcp.custom_route("/approve/{session_id}/respond", methods=["POST"])
+    async def approval_respond(request: Request) -> HTMLResponse:
+        session_id = request.path_params["session_id"]
+        body = await request.body()
+        from urllib.parse import parse_qs
+        params = parse_qs(body.decode("utf-8", errors="replace"))
+
+        submitted_nonce = params.get("nonce", [""])[0]
+        action = params.get("action", ["deny"])[0]
+
+        result = registry.submit_response(session_id, submitted_nonce, action)
+        if result is None:
+            return HTMLResponse(
+                _render_response_page("timeout"),
+                status_code=403,
+            )
+
+        return HTMLResponse(_render_response_page(action))
+
+    return registry
+
+
+# ============================================================================
+# Backwards-compatible start_approval_server (standalone TCP server for tests)
+# ============================================================================
 
 
 async def start_approval_server(
@@ -409,33 +556,31 @@ async def start_approval_server(
     details: dict[str, Any],
     timeout_seconds: int = 120,
 ) -> ApprovalSession:
-    """Spin up a temporary local web server for user approval.
+    """Legacy entry point — spins up a standalone TCP server.
 
-    Returns an :class:`ApprovalSession` whose ``.url`` can be shown to the
-    user (via ``ctx.info`` or tool result) and whose ``.wait()`` coroutine
-    blocks until the user clicks Approve/Deny or the timeout expires.
-
-    Args:
-        title: Dialog title shown in the banner.
-        message: Explanatory text shown to the user.
-        details: Key-value pairs displayed in a table (e.g., scopes, token name).
-        timeout_seconds: How long to wait before auto-denying.
-
-    Returns:
-        An :class:`ApprovalSession` with ``.url`` and ``.wait()``.
+    Prefer :func:`register_approval_routes` + ``registry.create_session()``
+    for production use (works inside Docker).  This function is kept for
+    backwards compatibility with tests that don't have a FastMCP server.
     """
-    import secrets
+    import socket
+    from urllib.parse import parse_qs
 
+    def _find_free_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    session_id = secrets.token_urlsafe(12)
     nonce = secrets.token_urlsafe(16)
     port = _find_free_port()
     result_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
-    approval_html = _render_approval_page(title, message, details, nonce)
+    action_url = "/respond"
+    approval_html = _render_approval_page(title, message, details, nonce, action_url)
     approval_bytes = approval_html.encode()
 
     async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            # Read the HTTP request
             request_line = await asyncio.wait_for(reader.readline(), timeout=10)
             if not request_line:
                 writer.close()
@@ -444,7 +589,6 @@ async def start_approval_server(
             request_str = request_line.decode("utf-8", errors="replace")
             method, path, *_ = request_str.split()
 
-            # Read headers
             content_length = 0
             while True:
                 header_line = await asyncio.wait_for(reader.readline(), timeout=10)
@@ -454,11 +598,9 @@ async def start_approval_server(
                     content_length = int(header_line.split(b":")[1].strip())
 
             if method == "GET" and path == "/":
-                # Serve the approval page
                 _send_response(writer, 200, "text/html", approval_bytes)
 
             elif method == "POST" and path == "/respond":
-                # Read POST body
                 body = b""
                 if content_length > 0:
                     body = await asyncio.wait_for(reader.read(content_length), timeout=10)
@@ -491,9 +633,25 @@ async def start_approval_server(
 
     server = await asyncio.start_server(handle_connection, "127.0.0.1", port)
     url = f"http://127.0.0.1:{port}/"
-    logger.info("Approval server listening on %s", url)
+    logger.info("Standalone approval server listening on %s", url)
 
-    return ApprovalSession(url, result_future, server, timeout_seconds)
+    class _StandaloneSession(ApprovalSession):
+        """ApprovalSession that also shuts down the standalone TCP server."""
+        def __init__(self, url, sid, future, timeout, tcp_server):
+            super().__init__(url, sid, future, timeout)
+            self._server = tcp_server
+
+        async def wait(self) -> str:
+            try:
+                result = await self._future
+            finally:
+                self._timeout_task.cancel()
+                self._server.close()
+                await self._server.wait_closed()
+            logger.info("Standalone approval server shut down (result: %s)", result)
+            return result
+
+    return _StandaloneSession(url, session_id, result_future, timeout_seconds, server)
 
 
 def _send_response(writer: asyncio.StreamWriter, status: int, content_type: str, body: bytes):

@@ -5,13 +5,20 @@ RUN apt-get update && apt-get install -y git curl gcc g++ && rm -rf /var/lib/apt
 
 WORKDIR /app
 
+# Copy lockfile + manifest first (cache deps layer when only source changes)
 COPY pyproject.toml README.md ./
-COPY src/ src/
 COPY code-context/ code-context/
+
+# Install deps first (cached unless pyproject.toml or uv.lock change)
+ENV CMAKE_ARGS="-DGGML_CUDA=off"
+RUN uv sync --no-dev --group code-search --no-install-workspace
+
+# Now copy source + data (these layers invalidate on content changes)
+COPY src/ src/
 COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
-ENV CMAKE_ARGS="-DGGML_CUDA=off"
+# Install the workspace package itself
 RUN uv sync --no-dev --group code-search
 
 CMD ["uv", "run", "--no-sync", "serve"]

@@ -16,6 +16,9 @@ Provides tools for interacting with the Plainsight API and code search:
 Configuration:
     ENABLE_CODE_SEARCH: Set to "true" to enable code search tools (default: "true").
                         Set to "false" to run the server without code search capabilities.
+    REQUIRE_AUTH: Set to "true" to abort startup when no valid auth token is found
+                  (default: "false"). Slim Docker images set this to "true" since they
+                  have no code-search fallback and would otherwise serve zero tools.
 """
 
 import asyncio
@@ -43,7 +46,7 @@ from openfilter_mcp.auth import (
     TokenRefreshTransport,
 )
 from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY, SESSION_TOKEN_META_KEY, ALLOW_UNSCOPED_TOKEN
-from openfilter_mcp.approval_server import start_approval_server
+from openfilter_mcp.approval_server import register_approval_routes
 from openfilter_mcp.redact import register_sensitive
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 
@@ -53,13 +56,13 @@ logger = logging.getLogger(__name__)
 
 # code-context is an optional dependency (install with `uv sync --group code-search`)
 try:
-    from code_context.indexing import INDEXES_DIR
-    from code_context.main import _get_chunk, _search_index
+    from code_context.indexing import INDEXES_DIR  # pyright: ignore[reportMissingImports]
+    from code_context.main import _get_chunk, _search_index  # pyright: ignore[reportMissingImports]
 
     HAS_CODE_CONTEXT = True
 except ImportError:
-    INDEXES_DIR = None
-    HAS_CODE_CONTEXT = False
+    INDEXES_DIR = None  # pyright: ignore[reportConstantRedefinition]
+    HAS_CODE_CONTEXT = False  # pyright: ignore[reportConstantRedefinition]
 
 
 # =============================================================================
@@ -67,7 +70,7 @@ except ImportError:
 # =============================================================================
 
 
-def sanitize_openapi_spec(spec: dict) -> dict:
+def sanitize_openapi_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """Sanitize OpenAPI spec for MCP compatibility.
 
     Removes properties with invalid names (MCP requires ^[a-zA-Z0-9_-]{1,64}$).
@@ -82,7 +85,7 @@ def sanitize_openapi_spec(spec: dict) -> dict:
 
     valid_pattern = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
-    def clean_schema(schema: dict) -> dict:
+    def clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(schema, dict):
             return schema
 
@@ -134,7 +137,7 @@ def strip_schema_from_response(data: Any) -> Any:
         return data
 
 
-def get_openapi_spec() -> dict:
+def get_openapi_spec() -> dict[str, Any]:
     """Fetch the OpenAPI specification from Plainsight API.
 
     Returns:
@@ -156,7 +159,7 @@ def get_openapi_spec() -> dict:
     return sanitize_openapi_spec(spec)
 
 
-def get_entity_spec() -> dict | None:
+def get_entity_spec() -> dict[str, Any] | None:
     """Fetch the entity specification from Plainsight API.
 
     Returns None if the endpoint is unavailable (older API versions).
@@ -328,11 +331,30 @@ How to scope a session:
      then call `await_token_approval` with the `request_id` to block until they respond.
 3. Once approved, the scoped token is stored in the session and used automatically for all subsequent API calls.
 4. Use `get_token_status` to check current permissions and expiry.
-5. Use `clear_scoped_token` to revert to the default token (e.g., to request different scopes).
+5. Use `clear_scoped_token` to revert to the default token.
 
-Scope format: "resource:action" where resource is any entity type and action is read, create, update, delete, or * for all actions. Examples: "project:read,deployment:read", "filterpipeline:*,pipelineinstance:*".
+Scope format: "resource:action" where resource is any entity type (or * for all resources) and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*", "*:read" (read all resources), "*:*" (full access).
 
-Always request the narrowest scopes possible. Prefer read-only scopes unless writes are explicitly needed. Do not request wildcard (*) scopes unless the task genuinely requires all actions on a resource.
+IMPORTANT: Resource names and entity_type values are lowercase with NO underscores or hyphens. Use 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance' (not 'pipeline_instance'), 'sourceconfig' (not 'source_config'). Use list_entity_types() to discover valid names.
+
+When planning scopes, think ahead about the FULL task. If the user asks to "see what's running in my project," you'll need project + filterpipeline + pipelineinstance + filter access — request all of these upfront in a single request_scoped_token call rather than escalating incrementally. This reduces approval fatigue. Only escalate if a genuinely unexpected need arises (e.g., the user asks you to modify something after a read-only investigation).
+
+Escalation via delta: When you need additional scopes beyond what you already have, use `add_scopes` instead of repeating the full set. Example: `request_scoped_token(add_scopes="filterpipeline:update")` to add write access while keeping existing read scopes. Use `remove_scopes` to drop scopes you no longer need. The server merges the delta with your current scopes and presents the full result for approval.
+
+Choosing the right scope breadth — security vs. autonomy:
+
+Narrower scopes protect against accidental modifications, but overly narrow scopes cause repeated approval prompts that slow the user down and create approval fatigue. The right scope set depends on the task:
+
+- **Quick, focused task** (e.g., "check if pipeline X is running"): request only the specific scopes needed — `filterpipeline:read,pipelineinstance:read`.
+- **Broad investigation or long-running session** (e.g., "audit everything in my project"): request wider read scopes upfront — `*:read` or a broad set of resource types — so you can explore freely without re-prompting.
+- **Tasks likely to involve writes**: if the user's intent clearly implies modifications (e.g., "fix the misconfigured pipeline"), request both read AND write scopes for the relevant resources upfront rather than forcing a separate escalation.
+
+As a guideline: prefer the scope set that lets you complete the user's stated goal with a single approval. Avoid wildcard write scopes (`*:*`, `*:update`) unless the task genuinely requires broad write access. When in doubt, lean toward slightly broader read scopes and narrower write scopes — reads are low-risk, writes deserve more scrutiny.
+
+Tool usage tips:
+- list_entities uses `filters` (not `query_params`) for HTTP query parameters. Example: list_entities('filterpipeline', filters={'project': '<id>'}).
+- Most list endpoints filter by project via query params, not path params. Check get_entity_type_info() to see which params go where.
+- get_entity uses `id` (not `entity_id`) as the parameter name.
 
 Note: By default, all API operations require a scoped token. You MUST call request_scoped_token before any entity operations. This requirement can be relaxed by setting OPF_MCP_ALLOW_UNSCOPED_TOKEN=true, but this is not recommended.
 """.strip()
@@ -344,9 +366,20 @@ def create_mcp_server() -> FastMCP:
     Returns:
         A FastMCP server instance with entity CRUD tools plus code search tools.
         If no authentication token is available, only code search tools are registered.
+
+    Raises:
+        SystemExit: If REQUIRE_AUTH is set and no valid token is found.
     """
     # Create base MCP server
     mcp = FastMCP(name="OpenFilter MCP", instructions=_SERVER_INSTRUCTIONS)
+
+    # Register approval routes on the MCP server (reuses port 3000, works in Docker)
+    approval_registry = register_approval_routes(mcp)
+
+    # When REQUIRE_AUTH is set (e.g. slim Docker images that have no code-search
+    # fallback), refuse to start if we cannot authenticate -- an unauthenticated
+    # slim server would register zero tools and silently do nothing.
+    require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
 
     # Try to create authenticated client and load OpenAPI tools
     # If no token is available, we'll still create a server with code search tools
@@ -360,16 +393,29 @@ def create_mcp_server() -> FastMCP:
             client = create_authenticated_client()
             openapi_spec = get_openapi_spec()
             has_auth = True
-        except AuthenticationError:
+        except AuthenticationError as exc:
+            if require_auth:
+                raise SystemExit(
+                    "REQUIRE_AUTH is set but authentication failed: "
+                    f"{exc}\n"
+                    "Provide a valid token via OPENFILTER_TOKEN env var "
+                    "or mount a psctl token file."
+                ) from exc
             # Token was available but invalid - proceed without API tools
-            pass
+
+    if require_auth and not has_auth:
+        raise SystemExit(
+            "REQUIRE_AUTH is set but no authentication token was found.\n"
+            "Provide a valid token via OPENFILTER_TOKEN env var "
+            "or mount a psctl token file (~/.config/plainsight/token)."
+        )
 
     # Register entity-based CRUD tools if authenticated
     registry = None
     entity_handler = None
     if has_auth and openapi_spec and client:
         entity_spec = get_entity_spec()
-        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec)
+        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec, approval_registry=approval_registry)
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
@@ -388,21 +434,21 @@ def create_mcp_server() -> FastMCP:
             """Searches a semantic index for code matching a natural language description.
 
             Returns the top_k most relevant chunks with their scores and metadata."""
-            return _search_index(latest_index_name, query, "nl2code", top_k)
+            return _search_index(latest_index_name, query, "nl2code", top_k)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def search_code(code_query: str, top_k: int = 10) -> Dict[str, Any]:
             """Searches a semantic index for code similar to the provided code snippet.
 
             Returns the top_k most relevant chunks with their scores and metadata."""
-            return _search_index(latest_index_name, code_query, "code2code", top_k)
+            return _search_index(latest_index_name, code_query, "code2code", top_k)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def get_chunk(chunk_id: int) -> Dict[str, Any]:
             """Retrieves the content and metadata of a specific chunk by its ID.
 
             Returns: JSON object with filepath, startLine, endLine, and content."""
-            return _get_chunk(latest_index_name, chunk_id)
+            return _get_chunk(latest_index_name, chunk_id)  # pyright: ignore[reportPossiblyUnboundVariable]
 
         @mcp.tool()
         def read_file(filepath: str, start_line: int = 0, line_count: int = 100) -> str:
@@ -512,6 +558,11 @@ def create_mcp_server() -> FastMCP:
     # Token Scoping Tools (available when authenticated)
     # =========================================================================
 
+    # Session-scoped prefix so each server instance gets unique token names,
+    # avoiding 409 conflicts with tokens from other sessions.
+    import secrets as _secrets
+    _session_id = _secrets.token_hex(4)  # e.g. "a1b2c3d4"
+
     async def _create_and_activate_token(
         ctx: Context,
         http_client: httpx.AsyncClient,
@@ -528,15 +579,21 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Success dict with status "active", or error dict on failure.
         """
-        response = await http_client.post(
-            "/api-tokens",
-            json={
-                "name": name,
-                "scopes": scope_list,
-                "expires_at": expires_at.isoformat(),
-            },
-            headers={"X-Scope-OrgID": effective_org_id},
-        )
+        org_headers = {"X-Scope-OrgID": effective_org_id}
+        payload = {
+            "name": name,
+            "scopes": scope_list,
+            "expires_at": expires_at.isoformat(),
+        }
+        response = await http_client.post("/api-tokens", json=payload, headers=org_headers)
+
+        # Handle 409 Conflict: a token with this name already exists (e.g.
+        # leftover from a crashed session). Retry once with a disambiguated name.
+        if response.status_code == 409:
+            name = f"{name}-{_secrets.token_hex(2)}"
+            payload["name"] = name
+            logger.info(f"Token name conflict, retrying as '{name}'")
+            response = await http_client.post("/api-tokens", json=payload, headers=org_headers)
 
         if response.status_code >= 400:
             try:
@@ -584,15 +641,18 @@ def create_mcp_server() -> FastMCP:
             "expires_at": expires_at.isoformat(),
         }
 
-    # Pending web-based approvals: request_id -> {session, scope_list, name, ...}
-    _pending_approvals: Dict[str, Any] = {}
+    # Pending web-based approvals: session_id -> {request_id, session, scope_list, name, ...}
+    # At most one pending approval per MCP session — a new request auto-cancels the previous.
+    _pending_approvals: Dict[str, Any] = {}  # keyed by ctx.session_id
 
     if has_auth and client:
 
         @mcp.tool()
         async def request_scoped_token(
-            scopes: str,
-            name: str = "openfilter-mcp-agent",
+            scopes: str | None = None,
+            add_scopes: str | None = None,
+            remove_scopes: str | None = None,
+            name: str = f"mcp-{_session_id}",
             expires_in_hours: int = 1,
             org_id: str | None = None,
             ctx: Context | None = None,
@@ -600,25 +660,49 @@ def create_mcp_server() -> FastMCP:
             """Request a scoped API token with limited permissions for this session.
 
             This creates a new API token with only the permissions you need,
-            replacing the default full-access token for subsequent API calls.
-            The user will be asked to approve the requested scopes via an
-            interactive dialog (elicitation). If your MCP client does not support
-            elicitation, a browser-based approval page is started instead and
-            the tool returns immediately with an approval_url and request_id.
-            You MUST tell the user to open the URL, then call
-            await_token_approval with the request_id to block until they respond.
+            replacing the current token for subsequent API calls. The user will
+            be asked to approve the requested scopes via an interactive dialog
+            (elicitation). If your MCP client does not support elicitation, a
+            browser-based approval page is started instead and the tool returns
+            immediately with an approval_url and request_id. You MUST tell the
+            user to open the URL, then call await_token_approval with the
+            request_id to block until they respond.
 
             You will NOT see the token value — it is stored securely in the
             session and used automatically for subsequent API calls.
 
+            There are two ways to specify scopes:
+
+            1. **Absolute** — pass `scopes` with the full set you need.
+               This replaces any existing token entirely.
+
+            2. **Delta** — pass `add_scopes` and/or `remove_scopes` to modify
+               the current token's scopes. The server reads the active token's
+               scopes, applies the delta, and requests approval for the result.
+               This avoids repeating scopes you already have and makes
+               escalation intent clear. You do NOT need to call
+               clear_scoped_token first when using delta mode.
+
+            If both `scopes` and `add_scopes`/`remove_scopes` are provided,
+            `scopes` takes priority (delta params are ignored).
+
             Args:
-                scopes: Comma-separated list of permission scopes to request.
-                    Format: "resource:action" where action is read, create, update, delete, or *.
-                    Use "resource:*" for all actions on a resource.
-                    Valid resources are derived from the API spec at startup — use
-                    list_entity_types to discover them.
-                    Examples: "project:read,deployment:read,deployment:create",
-                             "filterpipeline:*,pipelineinstance:*"
+                scopes: Comma-separated list of permission scopes to request
+                    (replaces all current scopes). Format: "resource:action"
+                    where resource is any entity type or * for all resources,
+                    and action is read, create, update, delete, or *.
+                    IMPORTANT: Resource names are lowercase with NO underscores
+                    or hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
+                    'pipelineinstance' not 'pipeline_instance'. Use
+                    list_entity_types() to discover valid resource names.
+                    Examples: "project:read,filterpipeline:read,pipelineinstance:read",
+                             "filterpipeline:*,pipelineinstance:*",
+                             "*:read" (read all resources), "*:*" (full access)
+                add_scopes: Comma-separated scopes to ADD to the current token.
+                    Example: "filterpipeline:update" to add write access while
+                    keeping existing read scopes.
+                remove_scopes: Comma-separated scopes to REMOVE from the current
+                    token. Example: "filter:read" to drop a scope you no longer need.
                 name: A name for this token (for identification in the portal).
                 expires_in_hours: How long the token should be valid (default: 1 hour).
                 org_id: Optional organization ID to create the token for. If not provided,
@@ -630,9 +714,27 @@ def create_mcp_server() -> FastMCP:
             if not ctx:
                 return {"error": "This tool requires a session context. Ensure your MCP client provides one."}
 
-            scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
-            if not scope_list:
-                return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
+            # Resolve scope list: absolute mode vs delta mode
+            if scopes is not None:
+                # Absolute mode — use exactly what was provided
+                scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+                if not scope_list:
+                    return {"error": "No scopes provided. Specify at least one scope like 'project:read'."}
+            elif add_scopes is not None or remove_scopes is not None:
+                # Delta mode — read current scopes and apply changes
+                meta = await ctx.get_state(SESSION_TOKEN_META_KEY)
+                current = set(meta.get("scopes", [])) if meta else set()
+
+                to_add = {s.strip() for s in (add_scopes or "").split(",") if s.strip()}
+                to_remove = {s.strip() for s in (remove_scopes or "").split(",") if s.strip()}
+
+                scope_list = sorted((current | to_add) - to_remove)
+
+                if not scope_list:
+                    return {"error": "Resulting scope set is empty after applying delta. "
+                            f"Current: {sorted(current)}, add: {sorted(to_add)}, remove: {sorted(to_remove)}"}
+            else:
+                return {"error": "Provide either 'scopes' (absolute) or 'add_scopes'/'remove_scopes' (delta)."}
 
             valid_actions = {"read", "create", "update", "delete", "*"}
             valid_resources = set(registry.list_entities()) if registry else set()
@@ -645,8 +747,13 @@ def create_mcp_server() -> FastMCP:
                 resource, action = parts
                 if action not in valid_actions:
                     errors.append(f"{s} (unknown action '{action}', expected: {', '.join(sorted(valid_actions))})")
-                elif valid_resources and resource not in valid_resources:
-                    errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
+                elif resource != "*" and valid_resources and resource not in valid_resources:
+                    suggestions = registry.suggest_entity(resource, limit=3) if registry else []
+                    if suggestions:
+                        hint = f"did you mean: {', '.join(suggestions)}?"
+                        errors.append(f"{s} (unknown resource '{resource}', {hint})")
+                    else:
+                        errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
             if errors:
                 return {"error": f"Invalid scopes: {errors}"}
 
@@ -679,12 +786,15 @@ def create_mcp_server() -> FastMCP:
                 effective_org_id = org_id
                 if not effective_org_id:
                     token = read_psctl_token() or get_auth_token()
+                    if not token:
+                        return {"error": "No authentication token available."}
+                    effective_org_id = get_effective_org_id(token)
                     effective_org_id = get_effective_org_id(token)
                 if not effective_org_id:
                     return {"error": "Cannot determine organization ID from current token."}
 
                 # Client doesn't support elicitation — fall back to browser approval
-                session = await start_approval_server(
+                session = approval_registry.create_session(
                     title="Scoped Token Request",
                     message="The AI agent is requesting a scoped API token with the following permissions.",
                     details={
@@ -692,12 +802,21 @@ def create_mcp_server() -> FastMCP:
                         "Scopes": scope_list,
                         "Expires": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
                     },
+                    base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
                 )
+
+                # One pending approval per session — cancel any previous one
+                mcp_session_id = ctx.session_id
+                existing = _pending_approvals.get(mcp_session_id)
+                if existing:
+                    existing["session"].cancel("cancelled")
+                    logger.info("Cancelled previous pending approval for session %s", mcp_session_id)
 
                 # Store pending state so await_token_approval can finalize
                 import secrets
                 request_id = secrets.token_urlsafe(8)
-                _pending_approvals[request_id] = {
+                _pending_approvals[mcp_session_id] = {
+                    "request_id": request_id,
                     "session": session,
                     "scope_list": scope_list,
                     "name": name,
@@ -706,7 +825,7 @@ def create_mcp_server() -> FastMCP:
                 }
 
                 # Clean up stale entry if the user never calls await_token_approval
-                session.add_timeout_callback(lambda rid=request_id: _pending_approvals.pop(rid, None))
+                session.add_timeout_callback(lambda sid=mcp_session_id: _pending_approvals.pop(sid, None))
 
                 # Return immediately — the agent must tell the user about the
                 # URL, then call await_token_approval to block on the result.
@@ -726,6 +845,9 @@ def create_mcp_server() -> FastMCP:
             effective_org_id = org_id
             if not effective_org_id:
                 token = read_psctl_token() or get_auth_token()
+                if not token:
+                    return {"error": "No authentication token available."}
+                effective_org_id = get_effective_org_id(token)
                 effective_org_id = get_effective_org_id(token)
             if not effective_org_id:
                 return {"error": "Cannot determine organization ID from current token."}
@@ -760,7 +882,12 @@ def create_mcp_server() -> FastMCP:
             if not ctx:
                 return {"error": "This tool requires a session context."}
 
-            pending = _pending_approvals.get(request_id)
+            # Look up by request_id across all sessions
+            mcp_session_id = next(
+                (sid for sid, p in _pending_approvals.items() if p["request_id"] == request_id),
+                None,
+            )
+            pending = _pending_approvals.get(mcp_session_id) if mcp_session_id else None
             if not pending:
                 return {"error": f"No pending approval found for request_id '{request_id}'. "
                         "It may have already been completed or expired."}
@@ -771,8 +898,10 @@ def create_mcp_server() -> FastMCP:
             result = await session.wait()
 
             # Clean up pending state (may already be removed by timeout callback)
-            _pending_approvals.pop(request_id, None)
+            _pending_approvals.pop(mcp_session_id, None)
 
+            if result == "cancelled":
+                return {"status": "cancelled", "message": "A new token request superseded this one."}
             if result != "approve":
                 return {"status": "denied", "message": "User denied the token request (or it timed out)."}
 
@@ -857,11 +986,13 @@ def create_mcp_server() -> FastMCP:
 def main():
     # Ensure necessary directories exist
     if HAS_CODE_CONTEXT:
+        assert INDEXES_DIR is not None
         os.makedirs(INDEXES_DIR, exist_ok=True)
 
     # Create server at runtime (not at import time)
     mcp = create_mcp_server()
-    mcp.run(transport="http", port=3000, host="0.0.0.0")
+    port = int(os.getenv("PORT", "3000"))
+    mcp.run(transport="http", port=port, host="0.0.0.0")
 
 
 if __name__ == "__main__":

@@ -194,6 +194,55 @@ class TestReadPsctlToken:
             token = read_psctl_token()
             assert token == "z-suffix-token"
 
+    def test_cache_invalidated_when_file_mtime_changes(self, tmp_path):
+        """Should re-read token when file is modified externally (e.g. psctl login)."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "original-token",
+            "refresh_token": "refresh",
+            "expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            # First read caches the token
+            token = read_psctl_token()
+            assert token == "original-token"
+
+            # Simulate `psctl login` writing a new token — bump mtime
+            import time
+
+            time.sleep(0.05)  # ensure mtime differs
+            new_token_data = {
+                "access_token": "refreshed-token",
+                "refresh_token": "refresh2",
+                "expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            }
+            token_file.write_text(json.dumps(new_token_data))
+
+            # Second read should detect mtime change and return new token
+            token = read_psctl_token()
+            assert token == "refreshed-token"
+
+    def test_cache_used_when_file_unchanged(self, tmp_path):
+        """Should return cached token when file mtime hasn't changed."""
+        token_file = tmp_path / "token"
+        token_data = {
+            "access_token": "cached-token",
+            "refresh_token": "refresh",
+            "expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        with patch("openfilter_mcp.auth.get_psctl_token_path", return_value=token_file):
+            token1 = read_psctl_token()
+            assert token1 == "cached-token"
+
+            # Overwrite file content without changing mtime
+            # (read again — mtime is the same so cache should be used)
+            token2 = read_psctl_token()
+            assert token2 == "cached-token"
+
 
 class TestGetAuthToken:
     """Tests for get_auth_token function."""

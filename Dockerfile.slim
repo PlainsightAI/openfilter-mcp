@@ -5,8 +5,8 @@ RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Copy lockfile + manifest first (cache deps layer when only source changes)
 COPY pyproject.toml README.md ./
-COPY src/ src/
 
 # Stub out code-context so uv can resolve the workspace source path,
 # but without its [tool.uv.sources] that trigger a slow git clone
@@ -24,7 +24,19 @@ STUB
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
+# Fail fast at startup if no auth token is available -- without code search
+# the server would otherwise silently serve zero tools.
+ENV REQUIRE_AUTH=true
+
+# Install deps first (cached unless pyproject.toml or uv.lock change)
+RUN uv sync --no-dev --no-install-workspace
+
+# Now copy source (this layer invalidates on code changes)
+COPY src/ src/
+
+# Install the workspace package itself (fast — deps already cached)
 RUN uv sync --no-dev
+
 RUN rm -rf code-context/
 
 CMD ["uv", "run", "--no-sync", "serve"]

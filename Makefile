@@ -2,11 +2,16 @@ DOCKERHUB_REPO := plainsightai/openfilter-mcp
 PLATFORMS      := linux/amd64,linux/arm64
 VERSION        := $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 SHA            := $(shell git rev-parse --short HEAD)
+PYVER          := $(shell python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null || echo 0.0.0)
+V              ?= $(PYVER)
 GCP_PROJECT    := plainsightai-dev
 CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
+PSCTL_TOKEN    := $(shell psctl token path 2>/dev/null || echo $$HOME/.config/plainsight/token)
+DOCKER_CACHE   ?=
 
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
-        release.dev release.slim-dev release.prod \
+        run.slim run.full \
+        release.dev release.slim.dev release.prod \
         cloud.slim cloud.full \
         index index.extract smoke
 
@@ -25,19 +30,33 @@ test: ## Run tests
 # ─── Build ────────────────────────────────────────────────────────────────────
 
 build.slim: ## Build slim Docker image (no ML deps, ~370MB)
-	docker build -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
+	docker build $(DOCKER_CACHE) -f Dockerfile.slim -t $(DOCKERHUB_REPO):slim .
 
 build.full: indexes ## Build full Docker image (with code search indexes)
-	docker build -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
+	docker build $(DOCKER_CACHE) -f Dockerfile.gpu -t $(DOCKERHUB_REPO):full .
 
 indexes: ## Ensure indexes exist (extract from published image if missing)
 	@test -d indexes || $(MAKE) index.extract
 
-build.run.slim: build.slim ## Build and run slim image
-	docker run --rm -p 3000:3000 $(DOCKERHUB_REPO):slim
+build.run.slim: build.slim ## Build and run slim image (with auth)
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):slim
 
-build.run.full: build.full ## Build and run full image
-	docker run --rm -p 3000:3000 $(DOCKERHUB_REPO):full
+build.run.full: build.full ## Build and run full image (with auth)
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):full
+
+run.slim: ## Run published slim image (with auth)
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest-slim
+
+run.full: ## Run published full image (with auth)
+	@docker rm -f openfilter-mcp 2>/dev/null || true
+	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
+	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest
 
 # ─── Index ────────────────────────────────────────────────────────────────────
 
@@ -54,8 +73,7 @@ index.extract: ## Extract indexes from published amd64 image
 
 # ─── Cloud Build (manual) ────────────────────────────────────────────────
 
-cloud.slim: ## Submit slim-only Cloud Build (V=0.0.0 for tag)
-	@test -n "$(V)" || { echo "Usage: make cloud.slim V=0.0.0"; exit 1; }
+cloud.slim: ## Submit slim-only Cloud Build (V from pyproject.toml or V=x.y.z)
 	gcloud builds submit \
 		--config=cloudbuild.yaml \
 		--project=$(GCP_PROJECT) \
@@ -63,8 +81,7 @@ cloud.slim: ## Submit slim-only Cloud Build (V=0.0.0 for tag)
 		--substitutions=TAG_NAME=v$(V)-slim-dev,SHORT_SHA=$(SHA),_DRY_RUN=false,_GCS_BUCKET=$(GCP_PROJECT)-build-artifacts \
 		.
 
-cloud.full: ## Submit full Cloud Build (V=0.0.0 for tag)
-	@test -n "$(V)" || { echo "Usage: make cloud.full V=0.0.0"; exit 1; }
+cloud.full: ## Submit full Cloud Build (V from pyproject.toml or V=x.y.z)
 	gcloud builds submit \
 		--config=cloudbuild.yaml \
 		--project=$(GCP_PROJECT) \
@@ -75,15 +92,12 @@ cloud.full: ## Submit full Cloud Build (V=0.0.0 for tag)
 # ─── Release ──────────────────────────────────────────────────────────────────
 
 release.dev: ## Tag and push a dev build (full + slim → GAR)
-	@test -n "$(V)" || { echo "Usage: make release.dev V=0.2.0"; exit 1; }
 	git tag v$(V)-dev && git push origin v$(V)-dev
 
-release.slim-dev: ## Tag and push a slim-only dev build (→ GAR)
-	@test -n "$(V)" || { echo "Usage: make release.slim-dev V=0.2.0"; exit 1; }
+release.slim.dev: ## Tag and push a slim-only dev build (→ GAR)
 	git tag v$(V)-slim-dev && git push origin v$(V)-slim-dev
 
 release.prod: ## Tag and push a production release (→ Docker Hub)
-	@test -n "$(V)" || { echo "Usage: make release.prod V=0.2.0"; exit 1; }
 	git tag v$(V) && git push origin v$(V)
 
 # ─── Smoke Test ───────────────────────────────────────────────────────────────
