@@ -641,10 +641,9 @@ def create_mcp_server() -> FastMCP:
             "expires_at": expires_at.isoformat(),
         }
 
-    # Pending web-based approvals: request_id -> {session, scope_list, name, ...}
-    _pending_approvals: Dict[str, Any] = {}
-
-    _MAX_PENDING_APPROVALS = 50
+    # Pending web-based approvals: session_id -> {request_id, session, scope_list, name, ...}
+    # At most one pending approval per MCP session — a new request auto-cancels the previous.
+    _pending_approvals: Dict[str, Any] = {}  # keyed by ctx.session_id
 
     if has_auth and client:
 
@@ -806,14 +805,20 @@ def create_mcp_server() -> FastMCP:
                     base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
                 )
 
-                # Guard against unbounded pending approvals
-                if len(_pending_approvals) >= _MAX_PENDING_APPROVALS:
-                    return {"error": "Too many pending approval requests. Please complete or wait for existing ones to expire."}
+                # One pending approval per session — cancel any previous one
+                mcp_session_id = ctx.session_id
+                existing = _pending_approvals.get(mcp_session_id)
+                if existing:
+                    fut = existing["session"]._future
+                    if not fut.done():
+                        fut.set_result("cancelled")
+                    logger.info("Cancelled previous pending approval for session %s", mcp_session_id)
 
                 # Store pending state so await_token_approval can finalize
                 import secrets
                 request_id = secrets.token_urlsafe(8)
-                _pending_approvals[request_id] = {
+                _pending_approvals[mcp_session_id] = {
+                    "request_id": request_id,
                     "session": session,
                     "scope_list": scope_list,
                     "name": name,
@@ -822,7 +827,7 @@ def create_mcp_server() -> FastMCP:
                 }
 
                 # Clean up stale entry if the user never calls await_token_approval
-                session.add_timeout_callback(lambda rid=request_id: _pending_approvals.pop(rid, None))
+                session.add_timeout_callback(lambda sid=mcp_session_id: _pending_approvals.pop(sid, None))
 
                 # Return immediately — the agent must tell the user about the
                 # URL, then call await_token_approval to block on the result.
@@ -879,7 +884,12 @@ def create_mcp_server() -> FastMCP:
             if not ctx:
                 return {"error": "This tool requires a session context."}
 
-            pending = _pending_approvals.get(request_id)
+            # Look up by request_id across all sessions
+            mcp_session_id = next(
+                (sid for sid, p in _pending_approvals.items() if p["request_id"] == request_id),
+                None,
+            )
+            pending = _pending_approvals.get(mcp_session_id) if mcp_session_id else None
             if not pending:
                 return {"error": f"No pending approval found for request_id '{request_id}'. "
                         "It may have already been completed or expired."}
@@ -890,8 +900,10 @@ def create_mcp_server() -> FastMCP:
             result = await session.wait()
 
             # Clean up pending state (may already be removed by timeout callback)
-            _pending_approvals.pop(request_id, None)
+            _pending_approvals.pop(mcp_session_id, None)
 
+            if result == "cancelled":
+                return {"status": "cancelled", "message": "A new token request superseded this one."}
             if result != "approve":
                 return {"status": "denied", "message": "User denied the token request (or it timed out)."}
 

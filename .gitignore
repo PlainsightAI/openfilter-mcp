@@ -9,18 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-# coding agents
+# coding agents (ignore personal configs, but track demo mcp.json)
 .gemini/
 .claude/
-
-# local stuff
-clones/
-indexes/
-openfilter_repos_clones/
-# in case of symlinks
-clones
-indexes
-openfilter_repos_clones
-uv.lock
-.claude/
+!.claude/mcp.json
 .cursor/
+!.cursor/mcp.json
