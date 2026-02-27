@@ -9,9 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-# coding agents (ignore personal configs, but track demo mcp.json)
+# coding agents (ignore personal configs)
 .gemini/
 .claude/
-!.claude/mcp.json
 .cursor/
-!.cursor/mcp.json
