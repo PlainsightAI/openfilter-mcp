@@ -26,11 +26,6 @@ name = "llama-cpp-python-metal"
 url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
 explicit = true
 
-[[tool.uv.index]]
-name = "llama-cpp-python-cpu"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
-explicit = true
-
 [tool.uv]
 config-settings-package = { "llama-cpp-python" = { "cmake.args" = "-DGGML_CUDA=on" } }
 

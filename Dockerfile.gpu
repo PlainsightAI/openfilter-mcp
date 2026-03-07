@@ -41,6 +41,6 @@ COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
 # Install workspace package (uses existing venv, just links the project)
-RUN uv sync --no-dev --group code-search
+RUN uv sync --python 3.12 --no-dev --group code-search
 
 CMD ["uv", "run", "--no-sync", "serve"]
