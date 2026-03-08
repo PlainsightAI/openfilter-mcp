@@ -53,9 +53,11 @@ scripts/
 | Group | What it adds | When to use |
 |-------|-------------|-------------|
 | _(base)_ | Platform tools, tantivy, inflect | `uv sync` — slim installs |
-| `code-search` | code-context, torch, llama-cpp-python, faiss | `uv sync --group code-search` — full installs |
+| `code-search` | code-context, torch, llama-cpp-python, faiss | `uv sync --group code-search` — full installs (Linux requires CUDA toolkit; see note below) |
 | `dev` | pytest, httpx | `uv sync --group dev` — development |
 
+
+**Note on `code-search` group (Linux):** On Linux, `llama-cpp-python` is built from source with `-DGGML_CUDA=on`. This requires the CUDA toolkit (nvcc, CUDA headers/libs) to be installed on the host. If you develop on Linux without a CUDA-capable GPU, skip the `code-search` group or build inside the GPU Docker image instead.
 ## Releasing
 
 Releases are automated via [Google Cloud Build](../cloudbuild.yaml). Pushing a `v*` tag triggers a multi-arch (amd64 + arm64) build of both full and slim image variants. Builds are dry-run by default — the Terraform-managed trigger sets `_DRY_RUN=false` to enable pushing.
