@@ -40,7 +40,8 @@ COPY src/ src/
 COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
-# Install workspace package (uses existing venv, just links the project)
-RUN uv sync --python 3.12 --no-dev --group code-search --no-build-package llama-cpp-python
+# Install the workspace packages only — all deps (including CUDA-built
+# llama-cpp-python) are already in the copied venv from the builder stage.
+RUN uv pip install --python .venv/bin/python --no-deps -e . -e code-context/
 
 CMD ["uv", "run", "--no-sync", "serve"]
