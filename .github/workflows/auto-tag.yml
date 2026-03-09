@@ -38,15 +38,14 @@ jobs:
         id: version
         if: steps.changed.outputs.changed == 'true'
         run: |
-          version=$(python3 << 'PYEOF'
-import sys, re, tomllib, pathlib
-data = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-v = data['project']['version']
-if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', v):
-    print(f'::error::Version "{v}" does not match X.Y.Z', file=sys.stderr)
-    sys.exit(1)
-print(v)
-PYEOF
+          version=$(python3 - << 'PYEOF'
+          import sys, re, tomllib, pathlib
+          v = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', v):
+              print(f'::error::Version "{v}" does not match X.Y.Z', file=sys.stderr)
+              sys.exit(1)
+          print(v)
+          PYEOF
           )
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
