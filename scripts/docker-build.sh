@@ -103,21 +103,26 @@ else
     echo "Version tag build: ${TAG_NAME} (${DOCKERFILE})"
     NEW_VERSION=$(echo "${TAG_NAME}" | sed 's/^v//')
 
-    # Fetch current latest version from DockerHub
+    # Fetch current latest version from DockerHub (python3 instead of jq — not in cloud-builders/docker)
     LATEST_DIGEST=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags/${LATEST_TAG}" | \
-      jq -r '.images[0].digest // empty')
+      python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("images",[{}])[0].get("digest",""))' 2>/dev/null)
 
     CURRENT_VERSION=""
     if [[ -n "${LATEST_DIGEST}" ]]; then
-      # Build a jq filter that matches tags with or without the suffix
-      if [[ -n "${TAG_SUFFIX}" ]]; then
-        JQ_FILTER=".results[] | select(.images[].digest == \$digest) | .name | select(test(\"^v?[0-9]+\\\\.[0-9]+\\\\.[0-9]+${TAG_SUFFIX}$\")) | sub(\"${TAG_SUFFIX}$\"; \"\")"
-      else
-        JQ_FILTER='.results[] | select(.images[].digest == $digest) | .name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))'
-      fi
       CURRENT_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/${_DOCKERHUB_REPO}/tags?page_size=100" | \
-        jq -r --arg digest "${LATEST_DIGEST}" "${JQ_FILTER}" | \
-        sed 's/^v//' | head -1)
+        python3 -c '
+import sys, json, re
+data = json.load(sys.stdin)
+digest = "'"${LATEST_DIGEST}"'"
+suffix = "'"${TAG_SUFFIX}"'"
+pat = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+" + re.escape(suffix) + r"$")
+for tag in data.get("results", []):
+    if any(img.get("digest") == digest for img in tag.get("images", [])):
+        name = tag["name"]
+        if pat.match(name):
+            print(re.sub(r"^v", "", name.removesuffix(suffix)))
+            break
+' | head -1)
     fi
     CURRENT_VERSION="${CURRENT_VERSION:-0.0.0}"
     echo "Current latest: ${CURRENT_VERSION}, New: ${NEW_VERSION}"
