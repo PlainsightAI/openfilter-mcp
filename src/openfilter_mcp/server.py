@@ -49,6 +49,12 @@ from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY
 from openfilter_mcp.approval_server import register_approval_routes
 from openfilter_mcp.redact import register_sensitive
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
+from openfilter_mcp.scopes import (
+    ScopesUnavailable,
+    get_or_fetch_grantable,
+    is_scope_granted,
+    suggest_grantable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +330,7 @@ OpenFilter MCP provides entity CRUD tools for the Plainsight API and semantic co
 **Token scoping (important):** Before making ANY API calls, you should request a scoped token with the minimum permissions your task requires. This follows the principle of least privilege and protects against accidental modifications to resources outside the task scope — even for read-only operations.
 
 How to scope a session:
-1. Determine which entity types and actions your task needs (use `list_entity_types` to discover available resources).
+1. Determine which entity types and actions your task needs (use `list_entity_types` to discover available resources; use `list_grantable_scopes` to enumerate the exact scope strings your role can grant, including sub-actions like `start`/`stop`/`trigger`).
 2. Call `request_scoped_token` with a comma-separated list of "resource:action" scopes.
    - The user will be asked to approve via an interactive dialog or browser page.
    - If the response includes an `approval_url`, tell the user to open it in their browser,
@@ -333,7 +339,7 @@ How to scope a session:
 4. Use `get_token_status` to check current permissions and expiry.
 5. Use `clear_scoped_token` to revert to the default token.
 
-Scope format: "resource:action" where resource is any entity type (or * for all resources) and action is read, create, update, delete, or * for all actions. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*", "*:read" (read all resources), "*:*" (full access).
+Scope format: "resource:action" where resource is any entity type (or * for all resources) and action is drawn from the live policies — read, create, update, delete, plus per-domain sub-actions like start/stop/trigger/upload where applicable. Validation is driven by `/rbac/scopes`, so call `list_grantable_scopes` to see the authoritative set for your role. Examples: "project:read,filterpipeline:read", "filterpipeline:*,pipelineinstance:*", "pipelineinstance:start,pipelineinstance:stop", "*:*" (admin only).
 
 IMPORTANT: Resource names and entity_type values are lowercase with NO underscores or hyphens. Use 'filterpipeline' (not 'filter_pipeline'), 'pipelineinstance' (not 'pipeline_instance'), 'sourceconfig' (not 'source_config'). Use list_entity_types() to discover valid names.
 
@@ -346,10 +352,10 @@ Choosing the right scope breadth — security vs. autonomy:
 Narrower scopes protect against accidental modifications, but overly narrow scopes cause repeated approval prompts that slow the user down and create approval fatigue. The right scope set depends on the task:
 
 - **Quick, focused task** (e.g., "check if pipeline X is running"): request only the specific scopes needed — `filterpipeline:read,pipelineinstance:read`.
-- **Broad investigation or long-running session** (e.g., "audit everything in my project"): request wider read scopes upfront — `*:read` or a broad set of resource types — so you can explore freely without re-prompting.
+- **Broad investigation or long-running session** (e.g., "audit everything in my project"): request wider read scopes upfront — a broad set of per-resource reads like `project:read,filterpipeline:read,pipelineinstance:read,...` — so you can explore freely without re-prompting. (There is no `*:read` shorthand; `/rbac/scopes` only emits per-resource wildcards like `filterpipeline:*` or the admin-only `*:*`.)
 - **Tasks likely to involve writes**: if the user's intent clearly implies modifications (e.g., "fix the misconfigured pipeline"), request both read AND write scopes for the relevant resources upfront rather than forcing a separate escalation.
 
-As a guideline: prefer the scope set that lets you complete the user's stated goal with a single approval. Avoid wildcard write scopes (`*:*`, `*:update`) unless the task genuinely requires broad write access. When in doubt, lean toward slightly broader read scopes and narrower write scopes — reads are low-risk, writes deserve more scrutiny.
+As a guideline: prefer the scope set that lets you complete the user's stated goal with a single approval. Avoid broad wildcard grants like `*:*` or per-resource writes (`filterpipeline:*`) when concrete actions would do. When in doubt, lean toward slightly broader read scopes and narrower write scopes — reads are low-risk, writes deserve more scrutiny.
 
 Tool usage tips:
 - list_entities uses `filters` (not `query_params`) for HTTP query parameters. Example: list_entities('filterpipeline', filters={'project': '<id>'}).
@@ -648,6 +654,30 @@ def create_mcp_server() -> FastMCP:
     if has_auth and client:
 
         @mcp.tool()
+        async def list_grantable_scopes(ctx: Context | None = None) -> Dict[str, Any]:
+            """List the RBAC scopes the current caller can grant when creating
+            an API token via request_scoped_token.
+
+            The list is fetched from plainsight-api's GET /rbac/scopes (role-
+            filtered to your Casbin role) and cached for this MCP session.
+            Call this before request_scoped_token if you're unsure which scope
+            strings are valid for your role — avoids trial-and-error validation
+            errors and picks up new sub-action scopes (e.g., 'start', 'trigger')
+            without an MCP release.
+
+            Returns:
+                {"scopes": ["filterpipeline:read", "filterpipeline:*", ...]}
+                sorted. Or {"error": ...} if /rbac/scopes is unreachable.
+            """
+            if not ctx:
+                return {"error": "This tool requires a session context. Ensure your MCP client provides one."}
+            try:
+                grantable = await get_or_fetch_grantable(ctx, client)
+            except ScopesUnavailable as e:
+                return {"error": f"/rbac/scopes unavailable (status={e.status}): {e.detail}"}
+            return {"scopes": sorted(grantable)}
+
+        @mcp.tool()
         async def request_scoped_token(
             scopes: str | None = None,
             add_scopes: str | None = None,
@@ -688,16 +718,18 @@ def create_mcp_server() -> FastMCP:
 
             Args:
                 scopes: Comma-separated list of permission scopes to request
-                    (replaces all current scopes). Format: "resource:action"
-                    where resource is any entity type or * for all resources,
-                    and action is read, create, update, delete, or *.
+                    (replaces all current scopes). Format: "resource:action",
+                    validated against the caller's grantable set from
+                    plainsight-api's /rbac/scopes (so sub-action scopes like
+                    'start', 'stop', 'trigger', 'upload' are accepted if your
+                    role covers them). Call list_grantable_scopes() to
+                    enumerate exactly what you can request — beats guessing.
                     IMPORTANT: Resource names are lowercase with NO underscores
                     or hyphens — e.g., 'filterpipeline' not 'filter_pipeline',
-                    'pipelineinstance' not 'pipeline_instance'. Use
-                    list_entity_types() to discover valid resource names.
+                    'pipelineinstance' not 'pipeline_instance'.
                     Examples: "project:read,filterpipeline:read,pipelineinstance:read",
                              "filterpipeline:*,pipelineinstance:*",
-                             "*:read" (read all resources), "*:*" (full access)
+                             "*:*" (full access; admin roles only).
                 add_scopes: Comma-separated scopes to ADD to the current token.
                     Example: "filterpipeline:update" to add write access while
                     keeping existing read scopes.
@@ -736,24 +768,27 @@ def create_mcp_server() -> FastMCP:
             else:
                 return {"error": "Provide either 'scopes' (absolute) or 'add_scopes'/'remove_scopes' (delta)."}
 
-            valid_actions = {"read", "create", "update", "delete", "*"}
-            valid_resources = set(registry.list_entities()) if registry else set()
+            try:
+                grantable = await get_or_fetch_grantable(ctx, client)
+            except ScopesUnavailable as e:
+                return {"error": (
+                    f"Cannot validate requested scopes: /rbac/scopes is unavailable "
+                    f"(status={e.status}): {e.detail}. Refusing to approve token "
+                    f"creation against an unverified scope set. Retry after "
+                    f"plainsight-api recovers."
+                )}
+
             errors = []
             for s in scope_list:
-                parts = s.split(":", 1)
-                if len(parts) != 2:
+                if ":" not in s or not all(s.split(":", 1)):
                     errors.append(f"{s} (expected 'resource:action')")
                     continue
-                resource, action = parts
-                if action not in valid_actions:
-                    errors.append(f"{s} (unknown action '{action}', expected: {', '.join(sorted(valid_actions))})")
-                elif resource != "*" and valid_resources and resource not in valid_resources:
-                    suggestions = registry.suggest_entity(resource, limit=3) if registry else []
-                    if suggestions:
-                        hint = f"did you mean: {', '.join(suggestions)}?"
-                        errors.append(f"{s} (unknown resource '{resource}', {hint})")
+                if not is_scope_granted(s, grantable):
+                    hint = suggest_grantable(s, grantable)
+                    if hint:
+                        errors.append(f"{s} (not in your grantable scope set; did you mean '{hint}'?)")
                     else:
-                        errors.append(f"{s} (unknown resource '{resource}', available: {', '.join(sorted(valid_resources))})")
+                        errors.append(f"{s} (not in your grantable scope set)")
             if errors:
                 return {"error": f"Invalid scopes: {errors}"}
 
