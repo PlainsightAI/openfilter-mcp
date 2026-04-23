@@ -780,7 +780,12 @@ def create_mcp_server() -> FastMCP:
 
             errors = []
             for s in scope_list:
-                if ":" not in s or not all(s.split(":", 1)):
+                # Shape check: exactly one ':' separating non-empty resource
+                # and non-empty action. Extra colons (e.g. 'a:b:c') are
+                # rejected — is_scope_granted applies the same rule, but we
+                # surface a clearer 'expected resource:action' error here.
+                res, sep, act = s.partition(":")
+                if sep != ":" or not res or not act or ":" in act:
                     errors.append(f"{s} (expected 'resource:action')")
                     continue
                 if not is_scope_granted(s, grantable):

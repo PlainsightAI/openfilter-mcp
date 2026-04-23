@@ -6,13 +6,18 @@ scope set rather than a hand-rolled list that drifts from policies.csv.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
+import logging
 from typing import Any
 
 import httpx
 from fastmcp.server.context import Context
 
+logger = logging.getLogger(__name__)
+
 GRANTABLE_SCOPES_KEY = "rbac_grantable_scopes"
+GRANTABLE_SCOPES_LOCK_KEY = "rbac_grantable_scopes_lock"
 
 
 class ScopesUnavailable(RuntimeError):
@@ -49,10 +54,15 @@ async def fetch_grantable_scopes(client: httpx.AsyncClient) -> list[str]:
     if not isinstance(scopes, list):
         raise ScopesUnavailable(resp.status_code, f"missing 'scopes' list in body: {body!r}")
 
+    # Per-entry malformation is log-and-skip rather than fatal: a single bad
+    # row upstream shouldn't disable scope validation wholesale. Structural
+    # failures (missing 'scopes' key, HTTP error, non-JSON body) still raise
+    # ScopesUnavailable above.
     values: list[str] = []
     for entry in scopes:
         if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
-            raise ScopesUnavailable(resp.status_code, f"malformed scope entry: {entry!r}")
+            logger.warning("Skipping malformed /rbac/scopes entry: %r", entry)
+            continue
         values.append(entry["value"])
     return values
 
@@ -66,13 +76,19 @@ def is_scope_granted(requested: str, grantable: set[str]) -> bool:
     - A wildcard request ('*:*', '<res>:*') is only granted when that exact
       wildcard (or a broader one) is in grantable — concrete tuples never
       compose up to a wildcard.
+    - Malformed requests (missing ':', empty half, extra ':' in the action
+      half, e.g. 'filterpipeline:read:extra') are rejected regardless of
+      what's in `grantable` — a wildcard grant does not paper over a bad
+      shape.
     """
+    # Shape validation must run before the exact-match and wildcard fast
+    # paths; otherwise a malformed requested scope like 'a:b:c' could be
+    # covered by 'a:*' or '*:*'.
+    res, sep, act = requested.partition(":")
+    if sep != ":" or not res or not act or ":" in act:
+        return False
     if requested in grantable:
         return True
-    parts = requested.split(":", 1)
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        return False
-    res, act = parts
     if "*:*" in grantable:
         return True
     if res == "*" or act == "*":
@@ -94,9 +110,26 @@ async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set
 
     Failures are not cached — subsequent calls retry the fetch.
     """
+    # `client` is the shared server-identity httpx client, so the grantable
+    # set it returns is effectively process-global even though this cache is
+    # keyed per-session via ctx.get_state/set_state.
     cached: Any = await ctx.get_state(GRANTABLE_SCOPES_KEY)
     if cached is not None:
         return set(cached)
-    scopes = await fetch_grantable_scopes(client)
-    await ctx.set_state(GRANTABLE_SCOPES_KEY, scopes)
-    return set(scopes)
+
+    # Serialize concurrent first-fetches within a session (e.g.
+    # list_grantable_scopes and request_scoped_token racing on a cold cache)
+    # so at most one GET /rbac/scopes is in flight per session. Double-check
+    # the cache after acquiring the lock so losers of the race don't refetch.
+    lock: Any = await ctx.get_state(GRANTABLE_SCOPES_LOCK_KEY)
+    if lock is None:
+        lock = asyncio.Lock()
+        await ctx.set_state(GRANTABLE_SCOPES_LOCK_KEY, lock)
+
+    async with lock:
+        cached = await ctx.get_state(GRANTABLE_SCOPES_KEY)
+        if cached is not None:
+            return set(cached)
+        scopes = await fetch_grantable_scopes(client)
+        await ctx.set_state(GRANTABLE_SCOPES_KEY, scopes)
+        return set(scopes)
