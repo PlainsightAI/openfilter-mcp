@@ -53,6 +53,7 @@ from openfilter_mcp.scopes import (
     ScopesUnavailable,
     get_or_fetch_grantable,
     is_scope_granted,
+    parse_scope,
     suggest_grantable,
 )
 
@@ -780,12 +781,9 @@ def create_mcp_server() -> FastMCP:
 
             errors = []
             for s in scope_list:
-                # Shape check: exactly one ':' separating non-empty resource
-                # and non-empty action. Extra colons (e.g. 'a:b:c') are
-                # rejected — is_scope_granted applies the same rule, but we
-                # surface a clearer 'expected resource:action' error here.
-                res, sep, act = s.partition(":")
-                if sep != ":" or not res or not act or ":" in act:
+                # Pre-check shape so a malformed scope gets a clearer error
+                # than the generic 'not in your grantable scope set'.
+                if parse_scope(s) is None:
                     errors.append(f"{s} (expected 'resource:action')")
                     continue
                 if not is_scope_granted(s, grantable):

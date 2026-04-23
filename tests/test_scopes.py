@@ -13,8 +13,40 @@ from openfilter_mcp.scopes import (
     fetch_grantable_scopes,
     get_or_fetch_grantable,
     is_scope_granted,
+    parse_scope,
     suggest_grantable,
 )
+
+
+# ---------------------------------------------------------------------------
+# parse_scope
+# ---------------------------------------------------------------------------
+
+
+class TestParseScope:
+    def test_concrete_pair(self):
+        assert parse_scope("filterpipeline:read") == ("filterpipeline", "read")
+
+    def test_resource_wildcard(self):
+        assert parse_scope("filterpipeline:*") == ("filterpipeline", "*")
+
+    def test_admin_wildcard(self):
+        assert parse_scope("*:*") == ("*", "*")
+
+    def test_missing_colon_rejected(self):
+        assert parse_scope("no_colon") is None
+
+    def test_empty_resource_rejected(self):
+        assert parse_scope(":action") is None
+
+    def test_empty_action_rejected(self):
+        assert parse_scope("resource:") is None
+
+    def test_stray_colon_in_action_rejected(self):
+        assert parse_scope("a:b:c") is None
+
+    def test_empty_string_rejected(self):
+        assert parse_scope("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +105,7 @@ class TestIsScopeGranted:
         # A stray-colon scope is malformed and must be rejected regardless
         # of how broad the grant is — neither a resource-wildcard nor the
         # admin wildcard should paper over a bad shape.
+        assert parse_scope("a:b:c") is None
         assert not is_scope_granted("filterpipeline:read:extra", {"filterpipeline:*"})
         assert not is_scope_granted("filterpipeline:read:extra", {"*:*"})
         assert not is_scope_granted("filterpipeline:read:extra", {"filterpipeline:read:extra"})

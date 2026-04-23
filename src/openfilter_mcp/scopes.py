@@ -82,6 +82,20 @@ async def fetch_grantable_scopes(client: httpx.AsyncClient) -> list[str]:
     return values
 
 
+def parse_scope(s: str) -> tuple[str, str] | None:
+    """Split a scope into (resource, action), or None if malformed.
+
+    Shape rule: exactly one ':' separating non-empty halves; stray colons
+    in the action half (e.g. 'a:b:c') are malformed. Single source of truth
+    for scope shape — a wildcard grant must not paper over a bad shape, so
+    this check runs before any wildcard/exact-match logic in callers.
+    """
+    res, sep, act = s.partition(":")
+    if sep != ":" or not res or not act or ":" in act:
+        return None
+    return res, act
+
+
 def is_scope_granted(requested: str, grantable: set[str]) -> bool:
     """Does `grantable` cover `requested`?
 
@@ -91,17 +105,13 @@ def is_scope_granted(requested: str, grantable: set[str]) -> bool:
     - A wildcard request ('*:*', '<res>:*') is only granted when that exact
       wildcard (or a broader one) is in grantable — concrete tuples never
       compose up to a wildcard.
-    - Malformed requests (missing ':', empty half, extra ':' in the action
-      half, e.g. 'filterpipeline:read:extra') are rejected regardless of
-      what's in `grantable` — a wildcard grant does not paper over a bad
-      shape.
+    - Malformed requests are rejected regardless of what's in `grantable`;
+      see `parse_scope` for the shape rule.
     """
-    # Shape validation must run before the exact-match and wildcard fast
-    # paths; otherwise a malformed requested scope like 'a:b:c' could be
-    # covered by 'a:*' or '*:*'.
-    res, sep, act = requested.partition(":")
-    if sep != ":" or not res or not act or ":" in act:
+    parsed = parse_scope(requested)
+    if parsed is None:
         return False
+    res, act = parsed
     if requested in grantable:
         return True
     if "*:*" in grantable:
