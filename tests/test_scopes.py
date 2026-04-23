@@ -55,6 +55,14 @@ class TestIsScopeGranted:
         assert is_scope_granted("*:*", {"*:*"})
         assert not is_scope_granted("*:*", {"filterpipeline:*", "project:*"})
 
+    def test_cross_resource_wildcard_requires_admin(self):
+        # `*:read` is a cross-resource wildcard request — a concrete set of
+        # per-resource reads must NOT compose up to it, only `*:*` covers it.
+        # Pins the contract called out in server._SERVER_INSTRUCTIONS: there
+        # is no `*:read` shorthand in the live /rbac/scopes set.
+        assert is_scope_granted("*:read", {"*:*"})
+        assert not is_scope_granted("*:read", {"project:read", "filterpipeline:read"})
+
     def test_malformed_request_always_false(self):
         assert not is_scope_granted("no_colon", {"*:*"})
         assert not is_scope_granted(":action", {"*:*"})

@@ -24,12 +24,14 @@ def stub_grantable_scopes_in_server():
 
     Patches the binding inside openfilter_mcp.server only — tests in
     test_scopes.py import from openfilter_mcp.scopes and are unaffected.
+
+    Fails loudly if the target symbol is missing: if `get_or_fetch_grantable`
+    is renamed or moved, we'd rather the fixture error than silently no-op
+    and let every dependent test either hit the real /rbac/scopes endpoint
+    or fail cryptically elsewhere.
     """
-    try:
-        with patch(
-            "openfilter_mcp.server.get_or_fetch_grantable",
-            new=AsyncMock(return_value={"*:*"}),
-        ):
-            yield
-    except (ImportError, AttributeError):
+    with patch(
+        "openfilter_mcp.server.get_or_fetch_grantable",
+        new=AsyncMock(return_value={"*:*"}),
+    ):
         yield

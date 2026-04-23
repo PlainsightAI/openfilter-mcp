@@ -38,7 +38,12 @@ async def fetch_grantable_scopes(client: httpx.AsyncClient) -> list[str]:
     """
     try:
         resp = await client.get("/rbac/scopes")
-    except httpx.HTTPError as e:
+    except httpx.RequestError as e:
+        # Only narrow this to transport-level errors. The authenticated client
+        # doesn't configure raise_for_status, so httpx.HTTPStatusError won't
+        # fire here today — but if someone wires up a response hook later, we
+        # want a real HTTP status error to propagate rather than be swallowed
+        # as a "transport error" with status=None.
         raise ScopesUnavailable(None, f"transport error: {e}") from e
 
     if resp.status_code // 100 != 2:
@@ -111,7 +116,10 @@ def suggest_grantable(requested: str, grantable: set[str]) -> str | None:
     nothing is close enough."""
     if not grantable:
         return None
-    matches = difflib.get_close_matches(requested, grantable, n=1, cutoff=0.6)
+    # sorted() for deterministic suggestions: set iteration order is
+    # hash-randomized, so when two candidates are equidistant, difflib would
+    # otherwise pick different winners across runs.
+    matches = difflib.get_close_matches(requested, sorted(grantable), n=1, cutoff=0.6)
     return matches[0] if matches else None
 
 
