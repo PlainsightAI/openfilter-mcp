@@ -1,6 +1,7 @@
 """Unit tests for openfilter_mcp.scopes."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -254,15 +255,32 @@ class TestGetOrFetchGrantable:
 
     async def test_concurrent_first_fetch_is_deduped(self, httpx_mock):
         """Two concurrent cold-cache callers must share a single
-        GET /rbac/scopes via the session-scoped lock + double-check."""
-        # Shared per-session state: get_state/set_state read/write this dict
+        GET /rbac/scopes via the request-scoped lock + double-check."""
+        # Shared per-request state: get_state/set_state read/write this dict
         # so both coroutines see each other's writes like the real ctx would.
         state: dict[str, object] = {}
 
         async def get_state(key):
             return state.get(key)
 
-        async def set_state(key, value):
+        async def set_state(key, value, *, serializable: bool = True):
+            # Mirror fastmcp's Context.set_state contract: when `serializable`
+            # is True (the default), the value is routed through a pydantic
+            # StateValue into key_value storage, which raises on
+            # non-json-round-trippable objects (e.g. asyncio.Lock). The real
+            # code catches the underlying SerializationError/ValueError and
+            # re-raises TypeError. We reproduce that here by round-tripping
+            # through json.dumps so tests catch regressions where a caller
+            # forgets to pass serializable=False for a non-serializable value.
+            if serializable:
+                try:
+                    json.dumps(value)
+                except TypeError as e:
+                    raise TypeError(
+                        f"Value for state key {key!r} is not serializable. "
+                        f"Use set_state({key!r}, value, serializable=False) to "
+                        f"store non-serializable values."
+                    ) from e
             state[key] = value
 
         ctx = MagicMock()

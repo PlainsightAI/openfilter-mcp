@@ -59,11 +59,21 @@ async def fetch_grantable_scopes(client: httpx.AsyncClient) -> list[str]:
     # failures (missing 'scopes' key, HTTP error, non-JSON body) still raise
     # ScopesUnavailable above.
     values: list[str] = []
-    for entry in scopes:
+    skipped = 0
+    for idx, entry in enumerate(scopes):
         if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
-            logger.warning("Skipping malformed /rbac/scopes entry: %r", entry)
+            logger.warning(
+                "Skipping malformed /rbac/scopes entry at index %d: %r", idx, entry
+            )
+            skipped += 1
             continue
         values.append(entry["value"])
+    if skipped:
+        logger.warning(
+            "/rbac/scopes: %d of %d entries skipped due to malformed shape",
+            skipped,
+            len(scopes),
+        )
     return values
 
 
@@ -106,25 +116,29 @@ def suggest_grantable(requested: str, grantable: set[str]) -> str | None:
 
 
 async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set[str]:
-    """Return the caller's grantable scopes, fetching once per MCP session.
+    """Return the caller's grantable scopes, fetching once per MCP request.
 
     Failures are not cached — subsequent calls retry the fetch.
     """
     # `client` is the shared server-identity httpx client, so the grantable
     # set it returns is effectively process-global even though this cache is
-    # keyed per-session via ctx.get_state/set_state.
+    # keyed per-request via ctx.get_state/set_state.
     cached: Any = await ctx.get_state(GRANTABLE_SCOPES_KEY)
     if cached is not None:
         return set(cached)
 
-    # Serialize concurrent first-fetches within a session (e.g.
+    # Serialize concurrent first-fetches within a request (e.g.
     # list_grantable_scopes and request_scoped_token racing on a cold cache)
-    # so at most one GET /rbac/scopes is in flight per session. Double-check
+    # so at most one GET /rbac/scopes is in flight per request. Double-check
     # the cache after acquiring the lock so losers of the race don't refetch.
+    # The lock is stored with serializable=False because asyncio.Lock cannot
+    # be round-tripped through fastmcp's pydantic-backed session store; this
+    # routes it into the request-scoped dict instead, which is the correct
+    # scope for intra-request dedup anyway.
     lock: Any = await ctx.get_state(GRANTABLE_SCOPES_LOCK_KEY)
     if lock is None:
         lock = asyncio.Lock()
-        await ctx.set_state(GRANTABLE_SCOPES_LOCK_KEY, lock)
+        await ctx.set_state(GRANTABLE_SCOPES_LOCK_KEY, lock, serializable=False)
 
     async with lock:
         cached = await ctx.get_state(GRANTABLE_SCOPES_KEY)
