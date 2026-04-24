@@ -51,9 +51,9 @@ from openfilter_mcp.redact import register_sensitive
 from openfilter_mcp.preindex_repos import MONOREPO_CLONE_DIR
 from openfilter_mcp.scopes import (
     ScopesUnavailable,
+    classify_rejection,
     get_or_fetch_grantable,
     is_scope_granted,
-    parse_scope,
     suggest_grantable,
 )
 
@@ -781,17 +781,17 @@ def create_mcp_server() -> FastMCP:
 
             errors = []
             for s in scope_list:
-                # Pre-check shape so a malformed scope gets a clearer error
-                # than the generic 'not in your grantable scope set'.
-                if parse_scope(s) is None:
-                    errors.append(f"{s} (expected 'resource:action')")
+                if is_scope_granted(s, grantable):
                     continue
-                if not is_scope_granted(s, grantable):
-                    hint = suggest_grantable(s, grantable)
-                    if hint:
-                        errors.append(f"{s} (not in your grantable scope set; did you mean '{hint}'?)")
-                    else:
-                        errors.append(f"{s} (not in your grantable scope set)")
+                # classify_rejection splits "unknown resource X" from "unknown
+                # action Y for resource Z" so agents can fix the wrong half
+                # directly instead of guessing from a generic rejection.
+                reason = classify_rejection(s, grantable)
+                hint = suggest_grantable(s, grantable)
+                if hint:
+                    errors.append(f"{s} ({reason}; did you mean '{hint}'?)")
+                else:
+                    errors.append(f"{s} ({reason})")
             if errors:
                 return {"error": f"Invalid scopes: {errors}"}
 

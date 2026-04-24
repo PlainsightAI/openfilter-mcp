@@ -121,6 +121,45 @@ def is_scope_granted(requested: str, grantable: set[str]) -> bool:
     return f"{res}:*" in grantable
 
 
+def classify_rejection(requested: str, grantable: set[str]) -> str:
+    """Explain *why* a rejected scope failed validation.
+
+    Disambiguates the four failure modes an agent typically hits — malformed
+    shape, unknown resource, unknown action under a known resource, or a
+    wildcard request that needs a wildcard grant — so the error message points
+    at the half that's actually wrong instead of one generic "not granted"
+    blob. Caller is responsible for first checking is_scope_granted; this
+    function assumes the request was already rejected.
+    """
+    parsed = parse_scope(requested)
+    if parsed is None:
+        return f"expected 'resource:action'; got {requested!r}"
+    res, act = parsed
+
+    # Decompose the grantable set once. parse_scope filters out any malformed
+    # entries defensively (fetch_grantable_scopes already validates shape, but
+    # this keeps the classifier honest if it's ever called with an ad-hoc set).
+    pairs = [p for p in (parse_scope(g) for g in grantable) if p is not None]
+    granted_resources = {r for r, _ in pairs}
+
+    # Wildcard requests fail for a different reason than concrete typos: the
+    # user is asking to escalate to a wildcard grant they don't hold. Surface
+    # that directly rather than reporting "unknown action '*'".
+    if res == "*" and act == "*":
+        return "admin scope; requires '*:*' in your grantable set"
+    if act == "*":
+        return f"wildcard action; requires {res!r}:* or '*:*' in your grantable set"
+    if res == "*":
+        return "cross-resource wildcard; requires '*:*' in your grantable set"
+
+    if res not in granted_resources:
+        known = sorted(granted_resources)
+        return f"unknown resource {res!r} (known resources: {known})"
+
+    actions = sorted({a for r, a in pairs if r == res})
+    return f"unknown action {act!r} for resource {res!r} (granted actions: {actions})"
+
+
 def suggest_grantable(requested: str, grantable: set[str]) -> str | None:
     """Closest match for a rejected scope (difflib, cutoff 0.6). None if
     nothing is close enough."""
@@ -134,13 +173,13 @@ def suggest_grantable(requested: str, grantable: set[str]) -> str | None:
 
 
 async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set[str]:
-    """Return the caller's grantable scopes, fetching once per MCP request.
+    """Return the caller's grantable scopes, fetching once per MCP session.
 
-    Failures are not cached — subsequent calls retry the fetch.
+    Successes are stored via ctx.set_state with the default serializable=True,
+    which routes them through fastmcp's pydantic-backed session store — so the
+    cache lives for the session, not just the current request. Failures are
+    not cached; subsequent calls retry the fetch.
     """
-    # `client` is the shared server-identity httpx client, so the grantable
-    # set it returns is effectively process-global even though this cache is
-    # keyed per-request via ctx.get_state/set_state.
     cached: Any = await ctx.get_state(GRANTABLE_SCOPES_KEY)
     if cached is not None:
         return set(cached)

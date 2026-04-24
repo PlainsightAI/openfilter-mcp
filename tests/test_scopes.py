@@ -10,6 +10,7 @@ import pytest
 from openfilter_mcp.scopes import (
     GRANTABLE_SCOPES_KEY,
     ScopesUnavailable,
+    classify_rejection,
     fetch_grantable_scopes,
     get_or_fetch_grantable,
     is_scope_granted,
@@ -143,6 +144,69 @@ class TestSuggestGrantable:
 
     def test_empty_grantable(self):
         assert suggest_grantable("project:read", set()) is None
+
+
+# ---------------------------------------------------------------------------
+# classify_rejection
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyRejection:
+    """Each branch yields a distinct error message so agents can fix the half
+    that's actually wrong. The grantable set in these tests intentionally does
+    NOT contain '*:*' — classify_rejection is only called after is_scope_granted
+    returns False, so the admin-wildcard short-circuit is irrelevant here."""
+
+    GRANTABLE = {
+        "filterpipeline:read",
+        "filterpipeline:create",
+        "project:read",
+        "groundtruth:trigger",
+    }
+
+    def test_malformed_shape(self):
+        msg = classify_rejection("no_colon", self.GRANTABLE)
+        assert "expected 'resource:action'" in msg
+        assert "no_colon" in msg
+
+    def test_malformed_stray_colon(self):
+        # parse_scope rejects 'a:b:c' as malformed; the classifier must agree
+        # rather than falling through to "unknown resource 'a'".
+        msg = classify_rejection("filterpipeline:read:extra", self.GRANTABLE)
+        assert "expected 'resource:action'" in msg
+
+    def test_unknown_resource_lists_known_resources(self):
+        msg = classify_rejection("widget:read", self.GRANTABLE)
+        assert "unknown resource 'widget'" in msg
+        # Surfaced known resources are sorted for stable output.
+        assert "filterpipeline" in msg and "project" in msg and "groundtruth" in msg
+
+    def test_unknown_action_under_known_resource(self):
+        msg = classify_rejection("filterpipeline:delete", self.GRANTABLE)
+        assert "unknown action 'delete'" in msg
+        assert "for resource 'filterpipeline'" in msg
+        # The granted-actions list scopes to *this* resource, not the whole set.
+        assert "'create'" in msg and "'read'" in msg
+        assert "trigger" not in msg  # groundtruth's action shouldn't leak in
+
+    def test_admin_wildcard_request_distinguished(self):
+        msg = classify_rejection("*:*", self.GRANTABLE)
+        assert "admin scope" in msg
+        assert "'*:*'" in msg
+
+    def test_resource_wildcard_request_distinguished(self):
+        # Distinct from "unknown action '*'": user wants to escalate to a
+        # wildcard, not invoke a literal action named '*'.
+        msg = classify_rejection("filterpipeline:*", self.GRANTABLE)
+        assert "wildcard action" in msg
+        assert "'filterpipeline'" in msg
+
+    def test_cross_resource_wildcard_request_distinguished(self):
+        # `*:read` is the case called out in _SERVER_INSTRUCTIONS — it doesn't
+        # exist in the live scope set, so the only way to grant it is *:*.
+        msg = classify_rejection("*:read", self.GRANTABLE)
+        assert "cross-resource wildcard" in msg
+        assert "'*:*'" in msg
 
 
 # ---------------------------------------------------------------------------
