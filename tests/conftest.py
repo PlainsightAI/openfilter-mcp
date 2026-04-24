@@ -1,6 +1,6 @@
 """Shared test configuration."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,4 +14,24 @@ def allow_unscoped_token_in_tests():
     this by patching ALLOW_UNSCOPED_TOKEN themselves.
     """
     with patch("openfilter_mcp.entity_tools.ALLOW_UNSCOPED_TOKEN", True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def stub_grantable_scopes_in_server():
+    """Short-circuit request_scoped_token's live /rbac/scopes fetch for tests
+    that don't specifically exercise it.
+
+    Patches the binding inside openfilter_mcp.server only — tests in
+    test_scopes.py import from openfilter_mcp.scopes and are unaffected.
+
+    Fails loudly if the target symbol is missing: if `get_or_fetch_grantable`
+    is renamed or moved, we'd rather the fixture error than silently no-op
+    and let every dependent test either hit the real /rbac/scopes endpoint
+    or fail cryptically elsewhere.
+    """
+    with patch(
+        "openfilter_mcp.server.get_or_fetch_grantable",
+        new=AsyncMock(return_value={"*:*"}),
+    ):
         yield
