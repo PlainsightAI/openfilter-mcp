@@ -112,7 +112,17 @@ def decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
 def get_org_id_from_token(token: str) -> Optional[str]:
     """Extract the organization ID from a JWT token.
 
-    Looks for organization_id in app_metadata or user_metadata.
+    Supports both supported JWT shapes:
+
+      - **Supabase session JWTs** put `organization_id` inside the
+        nested `app_metadata` (or `user_metadata`) object — that's
+        the legacy psctl-token path.
+      - **plainsight-api OAuth-issued JWTs** (DT-132) put `org_id`
+        as a flat top-level claim. The `app_metadata` shape isn't
+        applicable because OAuth tokens are issued by our AS, not by
+        Supabase.
+
+    Both are checked. Returns the first one found.
 
     Args:
         token: The JWT token string.
@@ -124,7 +134,12 @@ def get_org_id_from_token(token: str) -> Optional[str]:
     if not payload:
         return None
 
-    # Try app_metadata first, then user_metadata
+    # OAuth-issued tokens: flat `org_id` claim (DT-132).
+    flat = payload.get("org_id")
+    if flat:
+        return str(flat)
+
+    # Supabase session JWTs: nested under app_metadata / user_metadata.
     for key in ("app_metadata", "user_metadata"):
         metadata = payload.get(key, {})
         if isinstance(metadata, dict):

@@ -239,31 +239,53 @@ class SchemaStrippingTransport(httpx.AsyncBaseTransport):
         return response
 
 
-def create_authenticated_client(timeout: float = 30.0):
-    """Create an authenticated async HTTP client for Plainsight API.
+def create_authenticated_client(timeout: float = 30.0, *, require_token: bool = False):
+    """Create an async HTTP client for Plainsight API.
 
-    Supports cross-tenant operations for Plainsight employees via PS_TARGET_ORG_ID.
+    Auth resolution model:
+
+      1. If a startup token is available (psctl token file or
+         OPENFILTER_TOKEN env), bind it as the client's default
+         Authorization header.
+      2. If not, return a client with NO Authorization default. Per-
+         request handlers (entity_tools._get_request_headers,
+         request_scoped_token's bootstrap path) override Authorization
+         on each call from session-scoped state, the user's primary
+         token, or the FastMCP-context OAuth bearer (whichever is
+         appropriate for that specific call). This is the load-bearing
+         change for OAuth-only deployments where there's no startup
+         token at all but every authenticated request carries a bearer.
+
+    Supports cross-tenant operations for Plainsight employees via
+    PS_TARGET_ORG_ID.
 
     Args:
         timeout: Request timeout in seconds.
+        require_token: If True, raise AuthenticationError when no
+            startup token is available (legacy behavior; only set this
+            from explicit psctl-only deployment paths). Defaults to
+            False so OAuth-only mode constructs a no-default-auth
+            client and tools register normally.
 
     Returns:
-        Configured httpx.AsyncClient instance with schema-stripping middleware
-        and automatic 401 retry via token refresh.
+        Configured httpx.AsyncClient instance with schema-stripping
+        middleware and automatic 401 retry via token refresh.
 
     Raises:
-        AuthenticationError: If no valid token is available.
+        AuthenticationError: If `require_token=True` and no token is
+            available.
     """
     token = get_auth_token()
-    if not token:
+    if not token and require_token:
         raise AuthenticationError("No authentication token available")
 
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Use effective org ID (supports cross-tenant for Plainsight employees)
-    org_id = get_effective_org_id(token)
-    if org_id:
-        headers["X-Scope-OrgID"] = org_id
+    headers: Dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        # Use effective org ID (supports cross-tenant for Plainsight employees)
+        org_id = get_effective_org_id(token)
+        if org_id:
+            headers["X-Scope-OrgID"] = org_id
 
     # Create transport chain: base -> token refresh -> schema stripping
     # Token refresh handles 401s by refreshing the token and retrying
@@ -367,6 +389,75 @@ Note: By default, all API operations require a scoped token. You MUST call reque
 """.strip()
 
 
+def _build_oauth_provider() -> Any:
+    """Construct a FastMCP RemoteAuthProvider when OAUTH_AS_URL is set,
+    otherwise return None and let the existing psctl-token Bearer path
+    (auth.py) handle requests as before.
+
+    The provider does two things FastMCP wires up automatically once
+    `auth=` is non-None:
+
+      1. Mounts `/.well-known/oauth-protected-resource` (RFC 9728) so
+         MCP clients discover the AS by querying *this* server first
+         rather than the cascade of fallbacks they currently 404 on
+         when they hit a server without this endpoint.
+      2. Returns 401 with a `WWW-Authenticate: Bearer ... resource_metadata="<url>"`
+         header on any unauthenticated request, pointing the client at
+         the protected-resource document above.
+
+    Token validation: ES256 (ECDSA P-256) JWTs against the AS's JWKS.
+    Plainsight API (DT-132) issues these — see internal/oauth/service/
+    keystore.go for the JWK shape we consume here. EdDSA was rejected
+    upstream specifically because FastMCP's stock JWTVerifier hardcodes
+    its alg allowlist and excludes it; ES256 is in the allowlist.
+
+    Audience: RFC 8707 resource-indicator-aware MCP clients (Claude Code,
+    MCP Inspector) pass `resource=<this-server>/mcp` at /authorize time,
+    and plainsight-api binds the JWT `aud` claim to that resource. So we
+    accept BOTH `<resource_url>/mcp` (the spec'd binding) AND `<as_url>`
+    (the iss-fallback for older clients that don't pass resource=). The
+    JWTVerifier accepts a list of audiences and validates that the token's
+    aud matches at least one. OAUTH_AUDIENCE overrides this list entirely
+    if the deployment needs custom values.
+    """
+    as_url = os.getenv("OAUTH_AS_URL")
+    if not as_url:
+        return None
+
+    # Imports are local so the existing psctl-token deployment path
+    # doesn't pull in the auth provider chain it never uses.
+    from fastmcp.server.auth import RemoteAuthProvider  # type: ignore[import-not-found]
+    from fastmcp.server.auth.providers.jwt import JWTVerifier  # type: ignore[import-not-found]
+
+    as_url = as_url.rstrip("/")
+    resource_url = os.getenv(
+        "OAUTH_RESOURCE_URL",
+        f"http://localhost:{os.getenv('PORT', '3000')}",
+    ).rstrip("/")
+    # Default audience set: the spec'd RFC 8707 binding (resource_url +
+    # "/mcp", which is what the protected-resource doc advertises and
+    # what RemoteAuthProvider broadcasts as the resource) plus the AS
+    # URL for iss-fallback compatibility. Either passes verification.
+    audience_env = os.getenv("OAUTH_AUDIENCE")
+    if audience_env:
+        audience: str | list[str] = [a.strip() for a in audience_env.split(",") if a.strip()]
+    else:
+        audience = [f"{resource_url}/mcp", as_url]
+
+    verifier = JWTVerifier(
+        jwks_uri=f"{as_url}/.well-known/jwks.json",
+        issuer=as_url,
+        audience=audience,
+        algorithm="ES256",
+    )
+    return RemoteAuthProvider(
+        token_verifier=verifier,
+        authorization_servers=[as_url],
+        base_url=resource_url,
+        resource_name="OpenFilter MCP",
+    )
+
+
 def create_mcp_server() -> FastMCP:
     """Create the MCP server with entity-based API tools and code search tools.
 
@@ -377,8 +468,14 @@ def create_mcp_server() -> FastMCP:
     Raises:
         SystemExit: If REQUIRE_AUTH is set and no valid token is found.
     """
-    # Create base MCP server
-    mcp = FastMCP(name="OpenFilter MCP", instructions=_SERVER_INSTRUCTIONS)
+    # Create base MCP server. `auth` is None unless OAUTH_AS_URL is set,
+    # in which case FastMCP mounts the RFC 9728 protected-resource
+    # endpoints + 401 WWW-Authenticate dance automatically.
+    mcp = FastMCP(
+        name="OpenFilter MCP",
+        instructions=_SERVER_INSTRUCTIONS,
+        auth=_build_oauth_provider(),
+    )
 
     # Register approval routes on the MCP server (reuses port 3000, works in Docker)
     approval_registry = register_approval_routes(mcp)
@@ -388,41 +485,86 @@ def create_mcp_server() -> FastMCP:
     # slim server would register zero tools and silently do nothing.
     require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
 
-    # Try to create authenticated client and load OpenAPI tools
-    # If no token is available, we'll still create a server with code search tools
+    # OpenAPI + entity-spec are PUBLIC endpoints on plainsight-api — they
+    # don't require authentication. Fetch them unconditionally so entity
+    # tools can register regardless of whether a startup credential is
+    # available. Auth is resolved per-request inside the tool handlers
+    # (session-scoped token from elicitation > psctl/env startup token >
+    # FastMCP-context OAuth bearer for the request_scoped_token bootstrap
+    # path), not at registration time.
+    #
+    # Earlier this was gated on `if token:` AND wrapped in a swallow-the-
+    # exception block, so a deployment with no psctl token (OAuth-only)
+    # silently registered zero tools — Claude Code saw an empty catalog
+    # via tools/list and looked broken end-to-end with no log line
+    # explaining why. Decoupling here also surfaces openapi-fetch
+    # failures loudly via the regular httpx exception path instead of
+    # hiding them behind has_auth=False.
     token = get_auth_token()
     client = None
     openapi_spec = None
-    has_auth = False
+    has_auth = bool(token)
+    auth_mode = (
+        "psctl/env token"
+        if token
+        else "OAuth-only (per-request bearer)" if os.getenv("OAUTH_AS_URL") else "none"
+    )
 
-    if token:
-        try:
-            client = create_authenticated_client()
-            openapi_spec = get_openapi_spec()
-            has_auth = True
-        except AuthenticationError as exc:
-            if require_auth:
-                raise SystemExit(
-                    "REQUIRE_AUTH is set but authentication failed: "
-                    f"{exc}\n"
-                    "Provide a valid token via OPENFILTER_TOKEN env var "
-                    "or mount a psctl token file."
-                ) from exc
-            # Token was available but invalid - proceed without API tools
-
-    if require_auth and not has_auth:
-        raise SystemExit(
-            "REQUIRE_AUTH is set but no authentication token was found.\n"
-            "Provide a valid token via OPENFILTER_TOKEN env var "
-            "or mount a psctl token file (~/.config/plainsight/token)."
+    try:
+        openapi_spec = get_openapi_spec()
+    except Exception as exc:
+        logger.warning(
+            "openapi.json fetch failed at startup against %s — entity tools will not register: %s",
+            PLAINSIGHT_API_URL,
+            exc,
         )
 
-    # Register entity-based CRUD tools if authenticated
+    # Construct an http client even when there's no startup token — it's
+    # used by entity tool handlers per-request with session-scoped
+    # Authorization headers, and by request_scoped_token's bootstrap path
+    # (which resolves Authorization at call time, not at client
+    # construction).
+    try:
+        client = create_authenticated_client(require_token=False)
+    except AuthenticationError as exc:
+        # require_token=False means this branch can't actually fire today,
+        # but keep it for symmetry in case a future require_token=True
+        # path lands.
+        logger.warning("create_authenticated_client raised unexpectedly: %s", exc)
+
+    if require_auth and not has_auth and auth_mode != "OAuth-only (per-request bearer)":
+        raise SystemExit(
+            "REQUIRE_AUTH is set but no authentication path is available.\n"
+            "Provide a valid token via OPENFILTER_TOKEN env var, mount a psctl "
+            "token file (~/.config/plainsight/token), or enable OAuth-only "
+            "mode by setting OAUTH_AS_URL."
+        )
+
+    if not has_auth:
+        if auth_mode == "OAuth-only (per-request bearer)":
+            logger.info(
+                "no startup credential found; running in OAuth-only mode "
+                "(per-request bearer auth via OAUTH_AS_URL=%s)",
+                os.getenv("OAUTH_AS_URL"),
+            )
+        else:
+            logger.warning(
+                "no startup credential AND no OAUTH_AS_URL — entity ops "
+                "will fail at request time with PermissionError. Set "
+                "OPENFILTER_TOKEN or run `psctl login`."
+            )
+
+    # Register entity-based CRUD tools whenever the OpenAPI spec is
+    # available — auth is no longer the registration gate. The handlers
+    # themselves enforce the elicitation gate (session-scoped token
+    # required for entity ops) at runtime.
     registry = None
     entity_handler = None
-    if has_auth and openapi_spec and client:
+    if openapi_spec and client is not None:
         entity_spec = get_entity_spec()
-        registry, entity_handler = register_entity_tools(mcp, client, openapi_spec, entity_spec=entity_spec, approval_registry=approval_registry)
+        registry, entity_handler = register_entity_tools(
+            mcp, client, openapi_spec, entity_spec=entity_spec, approval_registry=approval_registry
+        )
 
     # =========================================================================
     # Code Search Tools (manually defined - not part of Plainsight API)
@@ -477,10 +619,12 @@ def create_mcp_server() -> FastMCP:
         )
 
     # =========================================================================
-    # Generic Polling Tool (only available with authentication)
+    # Generic Polling Tool (only registered when openapi succeeded — its
+    # implementation calls back into entity handlers which themselves
+    # enforce per-request auth resolution).
     # =========================================================================
 
-    if has_auth and client:
+    if client is not None and entity_handler is not None:
 
         def _get_cross_tenant_headers(org_id: str | None) -> Dict[str, str] | None:
             """Get headers for cross-tenant access if allowed."""
@@ -570,6 +714,40 @@ def create_mcp_server() -> FastMCP:
     import secrets as _secrets
     _session_id = _secrets.token_hex(4)  # e.g. "a1b2c3d4"
 
+    def _resolve_bootstrap_auth() -> str | None:
+        """Resolve the credential to use for the /api-tokens bootstrap call.
+
+        Order of preference:
+
+          1. `get_auth_token()` — psctl token file or OPENFILTER_TOKEN env.
+             Long-lived primary credential when present.
+          2. FastMCP request-context OAuth bearer — the user's just-
+             OAuth-approved access token, available in OAuth-only
+             deployments where (1) is empty.
+
+        Returns the raw bearer string or None if neither path has a
+        credential. Used ONLY by `_create_and_activate_token` for the
+        /api-tokens elicitation-bootstrap call. Entity ops do NOT
+        consume this — they go through `entity_tools._get_request_headers`
+        which requires a session-scoped token (the elicitation gate).
+        That gate stays intact regardless of which bootstrap credential
+        was used here.
+        """
+        token = get_auth_token()
+        if token:
+            return token
+        # Fall through to the OAuth bearer if we're running OAuth-only.
+        # Importing the dependency here keeps the existing psctl-only
+        # deployment path from pulling in the FastMCP auth module.
+        try:
+            from fastmcp.server.dependencies import get_access_token  # type: ignore[import-not-found]
+            access = get_access_token()
+            if access is not None:
+                return access.token
+        except Exception:
+            pass
+        return None
+
     async def _create_and_activate_token(
         ctx: Context,
         http_client: httpx.AsyncClient,
@@ -586,7 +764,15 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Success dict with status "active", or error dict on failure.
         """
+        # /api-tokens needs a credential. The startup-bound client may
+        # have no default Authorization header (OAuth-only mode); fall
+        # back to the request bearer if so. Either way the resulting
+        # session-scoped token is what subsequent entity ops use, so the
+        # elicitation gate is preserved.
+        bootstrap_token = _resolve_bootstrap_auth()
         org_headers = {"X-Scope-OrgID": effective_org_id}
+        if bootstrap_token:
+            org_headers["Authorization"] = f"Bearer {bootstrap_token}"
         payload = {
             "name": name,
             "scopes": scope_list,
@@ -652,7 +838,13 @@ def create_mcp_server() -> FastMCP:
     # At most one pending approval per MCP session — a new request auto-cancels the previous.
     _pending_approvals: Dict[str, Any] = {}  # keyed by ctx.session_id
 
-    if has_auth and client:
+    # Scoped-token tools register whenever an http client exists — auth
+    # for the bootstrap /api-tokens call resolves at request time via
+    # _resolve_bootstrap_auth (psctl/env > FastMCP-context OAuth bearer).
+    # The elicitation gate (session-bound scoped token required for
+    # entity ops) lives downstream in entity_tools._get_request_headers
+    # and is unaffected.
+    if client is not None:
 
         @mcp.tool()
         async def list_grantable_scopes(ctx: Context | None = None) -> Dict[str, Any]:
@@ -820,13 +1012,15 @@ def create_mcp_server() -> FastMCP:
                 if "Method not found" not in err_msg and "not supported" not in err_msg:
                     raise
 
-                # Compute org_id now so it's available when the approval completes
+                # Compute org_id now so it's available when the approval completes.
+                # Use _resolve_bootstrap_auth so OAuth-only deployments (no psctl
+                # token) can still derive org_id from the request bearer's flat
+                # `org_id` claim (DT-132).
                 effective_org_id = org_id
                 if not effective_org_id:
-                    token = read_psctl_token() or get_auth_token()
+                    token = _resolve_bootstrap_auth()
                     if not token:
                         return {"error": "No authentication token available."}
-                    effective_org_id = get_effective_org_id(token)
                     effective_org_id = get_effective_org_id(token)
                 if not effective_org_id:
                     return {"error": "Cannot determine organization ID from current token."}
@@ -879,13 +1073,13 @@ def create_mcp_server() -> FastMCP:
             if not approved:
                 return {"status": "denied", "message": "User denied the token request."}
 
-            # Get the effective org ID
+            # Get the effective org ID. _resolve_bootstrap_auth covers both the
+            # legacy psctl/env path and the OAuth-only request-bearer fallback.
             effective_org_id = org_id
             if not effective_org_id:
-                token = read_psctl_token() or get_auth_token()
+                token = _resolve_bootstrap_auth()
                 if not token:
                     return {"error": "No authentication token available."}
-                effective_org_id = get_effective_org_id(token)
                 effective_org_id = get_effective_org_id(token)
             if not effective_org_id:
                 return {"error": "Cannot determine organization ID from current token."}
