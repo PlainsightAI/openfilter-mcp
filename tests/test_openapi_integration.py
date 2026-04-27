@@ -97,8 +97,23 @@ class TestAuthenticatedClient:
         assert client.headers["Authorization"] == "Bearer simple-token"
         assert "X-Scope-OrgID" not in client.headers
 
-    def test_create_authenticated_client_raises_without_token(self):
-        """Should raise AuthenticationError when no token available."""
+    def test_create_authenticated_client_no_token_does_not_raise(self):
+        """Default behavior: no token -> client without Authorization default.
+
+        Per-request handlers resolve auth at call time (session-scoped
+        token, psctl/env, or FastMCP-context OAuth bearer), so client
+        construction must succeed without a startup token.
+        """
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            from openfilter_mcp.server import create_authenticated_client
+
+            client = create_authenticated_client()
+
+        assert "Authorization" not in client.headers
+        assert "X-Scope-OrgID" not in client.headers
+
+    def test_create_authenticated_client_require_token_raises(self):
+        """Legacy require_token=True path still raises when no token."""
         with patch("openfilter_mcp.server.get_auth_token", return_value=None):
             from openfilter_mcp.server import (
                 create_authenticated_client,
@@ -106,24 +121,40 @@ class TestAuthenticatedClient:
             )
 
             with pytest.raises(AuthenticationError):
-                create_authenticated_client()
+                create_authenticated_client(require_token=True)
 
 
 class TestMCPServerCreation:
     """Tests for MCP server creation from OpenAPI spec."""
 
     def test_create_mcp_server_without_token_still_works(self):
-        """Should create MCP server without token (no OpenAPI tools, no polling)."""
+        """Without a startup token, server creation must succeed and
+        register entity + polling tools.
+
+        Auth is resolved per-request inside tool handlers (session-scoped
+        token from elicitation > psctl/env > FastMCP-context OAuth
+        bearer), so the registration path no longer gates on a startup
+        credential. The `if not has_auth` branch only logs a warning.
+        """
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {},
+        }
         with patch.dict(os.environ, {"REQUIRE_AUTH": "false"}):
             with patch("openfilter_mcp.server.get_auth_token", return_value=None):
                 with patch(
-                    "openfilter_mcp.server.get_latest_index_name",
-                    return_value="test-index",
+                    "openfilter_mcp.server.get_openapi_spec",
+                    return_value=mock_spec,
                 ):
-                    from openfilter_mcp.server import create_mcp_server
+                    with patch(
+                        "openfilter_mcp.server.get_latest_index_name",
+                        return_value="test-index",
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
 
-                    # This should NOT raise an exception
-                    mcp = create_mcp_server()
+                        # This should NOT raise an exception
+                        mcp = create_mcp_server()
 
         tool_names = _get_tool_names(mcp)
 
@@ -134,11 +165,13 @@ class TestMCPServerCreation:
             assert "get_chunk" in tool_names
             assert "read_file" in tool_names
 
-        # OpenAPI tools should NOT be available (no auth)
-        assert "list_projects" not in tool_names
+        # Entity tools register regardless of startup token — auth is
+        # enforced per-request by the handlers themselves.
+        assert "list_entity_types" in tool_names
+        assert "list_entities" in tool_names
 
-        # Polling tool should NOT be available (requires auth)
-        assert "poll_until_change" not in tool_names
+        # Polling tool registers alongside entity tools.
+        assert "poll_until_change" in tool_names
 
     def test_create_mcp_server_require_auth_fails_without_token(self):
         """Should raise SystemExit when REQUIRE_AUTH=true and no token is available."""

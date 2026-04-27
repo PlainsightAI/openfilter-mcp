@@ -527,9 +527,17 @@ def create_mcp_server() -> FastMCP:
     try:
         client = create_authenticated_client(require_token=False)
     except AuthenticationError as exc:
-        # require_token=False means this branch can't actually fire today,
-        # but keep it for symmetry in case a future require_token=True
-        # path lands.
+        # require_token=False shouldn't raise on a missing token, so an
+        # AuthenticationError here means something deeper went wrong
+        # (e.g. transport refused to mint a default-headers client).
+        # Honor the documented REQUIRE_AUTH fail-fast contract.
+        if require_auth:
+            raise SystemExit(
+                f"REQUIRE_AUTH is set but authentication failed: {exc}\n"
+                "Provide a valid token via OPENFILTER_TOKEN env var, mount a "
+                "psctl token file, or enable OAuth-only mode by setting "
+                "OAUTH_AS_URL."
+            ) from exc
         logger.warning("create_authenticated_client raised unexpectedly: %s", exc)
 
     if require_auth and not has_auth and auth_mode != "OAuth-only (per-request bearer)":
