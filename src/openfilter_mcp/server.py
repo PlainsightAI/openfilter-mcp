@@ -41,7 +41,6 @@ from openfilter_mcp.auth import (
     get_auth_token,
     get_effective_org_id,
     is_plainsight_employee,
-    read_psctl_token,
     AuthenticationError,
     TokenRefreshTransport,
 )
@@ -389,6 +388,54 @@ Note: By default, all API operations require a scoped token. You MUST call reque
 """.strip()
 
 
+def _resolve_bootstrap_auth() -> str | None:
+    """Resolve the credential to use for the /api-tokens bootstrap call.
+
+    Order of preference:
+
+      1. `get_auth_token()` — psctl token file or OPENFILTER_TOKEN env.
+         Long-lived primary credential when present.
+      2. FastMCP request-context OAuth bearer — the user's just-
+         OAuth-approved access token, available in OAuth-only
+         deployments where (1) is empty.
+
+    Returns the raw bearer string or None if neither path has a
+    credential. Used ONLY by `_create_and_activate_token` for the
+    /api-tokens elicitation-bootstrap call. Entity ops do NOT
+    consume this — they go through `entity_tools._get_request_headers`
+    which requires a session-scoped token (the elicitation gate).
+    That gate stays intact regardless of which bootstrap credential
+    was used here.
+
+    The security invariant that entity ops MUST NOT consume the request
+    bearer is enforced at test time by `tests/test_security_invariant.py`,
+    which AST-scans every entity-op handler for the anti-pattern.
+    """
+    token = get_auth_token()
+    if token:
+        return token
+    # Fall through to the OAuth bearer if we're running OAuth-only.
+    # Importing the dependency here keeps the existing psctl-only
+    # deployment path from pulling in the FastMCP auth module.
+    try:
+        from fastmcp.server.dependencies import get_access_token  # type: ignore[import-not-found]
+    except ImportError:
+        # Older fastmcp without OAuth dependency module — psctl path only.
+        return None
+    try:
+        access = get_access_token()
+    except Exception as exc:
+        # get_access_token() reads from a contextvar populated by FastMCP's
+        # auth middleware. If the middleware isn't installed, the var is
+        # missing, or the context is corrupted, surface it at debug level
+        # so OAuth-only deploys can diagnose silent bootstrap failures.
+        logger.debug("get_access_token() failed during bootstrap: %s", exc)
+        return None
+    if access is not None:
+        return access.token
+    return None
+
+
 def _build_oauth_provider() -> Any:
     """Construct a FastMCP RemoteAuthProvider when OAUTH_AS_URL is set,
     otherwise return None and let the existing psctl-token Bearer path
@@ -504,10 +551,15 @@ def create_mcp_server() -> FastMCP:
     client = None
     openapi_spec = None
     has_auth = bool(token)
+    # Control-flow signal for the REQUIRE_AUTH gate below: OAuth-only mode
+    # is when there's no startup token AND OAUTH_AS_URL is configured (the
+    # per-request bearer satisfies REQUIRE_AUTH). `auth_mode` is purely a
+    # log label — never compare it to gate behavior.
+    oauth_only_mode = not token and bool(os.getenv("OAUTH_AS_URL"))
     auth_mode = (
         "psctl/env token"
         if token
-        else "OAuth-only (per-request bearer)" if os.getenv("OAUTH_AS_URL") else "none"
+        else "OAuth-only (per-request bearer)" if oauth_only_mode else "none"
     )
 
     try:
@@ -540,7 +592,7 @@ def create_mcp_server() -> FastMCP:
             ) from exc
         logger.warning("create_authenticated_client raised unexpectedly: %s", exc)
 
-    if require_auth and not has_auth and auth_mode != "OAuth-only (per-request bearer)":
+    if require_auth and not has_auth and not oauth_only_mode:
         raise SystemExit(
             "REQUIRE_AUTH is set but no authentication path is available.\n"
             "Provide a valid token via OPENFILTER_TOKEN env var, mount a psctl "
@@ -549,7 +601,7 @@ def create_mcp_server() -> FastMCP:
         )
 
     if not has_auth:
-        if auth_mode == "OAuth-only (per-request bearer)":
+        if oauth_only_mode:
             logger.info(
                 "no startup credential found; running in OAuth-only mode "
                 "(per-request bearer auth via OAUTH_AS_URL=%s)",
@@ -721,40 +773,6 @@ def create_mcp_server() -> FastMCP:
     # avoiding 409 conflicts with tokens from other sessions.
     import secrets as _secrets
     _session_id = _secrets.token_hex(4)  # e.g. "a1b2c3d4"
-
-    def _resolve_bootstrap_auth() -> str | None:
-        """Resolve the credential to use for the /api-tokens bootstrap call.
-
-        Order of preference:
-
-          1. `get_auth_token()` — psctl token file or OPENFILTER_TOKEN env.
-             Long-lived primary credential when present.
-          2. FastMCP request-context OAuth bearer — the user's just-
-             OAuth-approved access token, available in OAuth-only
-             deployments where (1) is empty.
-
-        Returns the raw bearer string or None if neither path has a
-        credential. Used ONLY by `_create_and_activate_token` for the
-        /api-tokens elicitation-bootstrap call. Entity ops do NOT
-        consume this — they go through `entity_tools._get_request_headers`
-        which requires a session-scoped token (the elicitation gate).
-        That gate stays intact regardless of which bootstrap credential
-        was used here.
-        """
-        token = get_auth_token()
-        if token:
-            return token
-        # Fall through to the OAuth bearer if we're running OAuth-only.
-        # Importing the dependency here keeps the existing psctl-only
-        # deployment path from pulling in the FastMCP auth module.
-        try:
-            from fastmcp.server.dependencies import get_access_token  # type: ignore[import-not-found]
-            access = get_access_token()
-            if access is not None:
-                return access.token
-        except Exception:
-            pass
-        return None
 
     async def _create_and_activate_token(
         ctx: Context,

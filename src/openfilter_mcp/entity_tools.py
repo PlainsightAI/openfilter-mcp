@@ -915,46 +915,14 @@ class EntityToolsHandler:
         it overrides the default server token for this request. The scoped token's
         org_id is also used automatically.
 
-        SECURITY INVARIANT — DO NOT BREAK:
-        The Authorization header on outbound *entity-op* calls comes
-        from EITHER the session-scoped token (set by request_scoped_token
-        after explicit user approval) OR the user's static psctl /
-        OPENFILTER_TOKEN — NEVER from the OAuth Bearer that authenticated
-        this request to /mcp.
-
-        Bootstrap exception: server.py's `_resolve_bootstrap_auth` may
-        consume the FastMCP-context OAuth bearer for the ONE specific
-        call where it's the only credential available — the
-        /api-tokens POST that creates the session-scoped token in the
-        first place. Without that exception, OAuth-only deployments
-        (no psctl token on disk) can't bootstrap the elicitation flow
-        and are stuck at PermissionError forever. The bootstrap path
-        STILL drives elicitation: the user approves the narrower
-        scopes via `request_scoped_token`, and the resulting
-        session-bound token is what unlocks entity ops below.
-
-        OAuth Bearer auth on the MCP ingress (via RemoteAuthProvider in
-        server.py) signals "this caller is allowed to invoke MCP tools";
-        it does NOT substitute for the user's explicit per-session scope-
-        elicitation for entity ops. An agent operating under a broad
-        OAuth token (e.g. Claude Code with the user's full grantable
-        set) MUST still drive request_scoped_token before any entity
-        op, so the user gets to approve a narrower set of scopes for
-        this particular session (principle of least privilege, defense-
-        in-depth against an LLM deciding to write where it was told to
-        read).
-
-        If you're adding a new code path HERE (entity ops) and find
-        yourself reaching for `request.headers["authorization"]` or
-        `ctx.request_context.access_token` to populate the outbound
-        Authorization header, STOP. That collapses the ingress-auth
-        and outbound-auth layers and silently bypasses the elicitation
-        gate. The right pattern is always: scoped session token (set
-        by user-approved request_scoped_token) → fall back to
-        get_auth_token() (psctl or env) → fall back to the explicit
-        PermissionError below. The bootstrap exception is restricted
-        to `_resolve_bootstrap_auth` in server.py and is the ONLY
-        sanctioned consumer of the request bearer for outbound auth.
+        Outbound Authorization: scoped session token (user-approved via
+        request_scoped_token) → static psctl/OPENFILTER_TOKEN → explicit
+        PermissionError. The request OAuth bearer is intentionally NOT in
+        this chain; consuming it here would bypass the elicitation gate.
+        The single sanctioned exception is `server._resolve_bootstrap_auth`
+        for the /api-tokens POST that creates the session-scoped token.
+        That invariant is enforced by `tests/test_security_invariant.py`,
+        which AST-scans this file for the forbidden patterns.
 
         Args:
             org_id: Optional cross-tenant org ID override.
