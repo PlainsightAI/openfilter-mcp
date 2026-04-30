@@ -1,5 +1,3 @@
-import sys
-
 import httpx
 import jq # Assuming python-jq library
 import os
@@ -8,10 +6,17 @@ import git
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Capture the actual ImportError. `code_context.indexing` re-exports
+# `code_context.embedding` which imports llama_cpp / torch / faiss —
+# any of those failing (e.g. CUDA-runtime mismatch) surfaces here as
+# ImportError and would otherwise collapse into "code-context is not
+# installed", which sends debugging in the wrong direction.
 try:
     from code_context.indexing import index_repository_direct
-except ImportError:
+    _import_error: BaseException | None = None
+except ImportError as e:
     index_repository_direct = None
+    _import_error = e
 
 MONOREPO_CLONE_DIR = "openfilter_repos_clones"
 
@@ -22,8 +27,17 @@ def preindex_openfilter_repos(org_name="plainsightai", name_filter=""):
     using code_context's core indexing function.
     """
     if index_repository_direct is None:
-        print("Error: code-context is not installed. Install with: uv sync --group code-search")
-        sys.exit(1)
+        # Re-raise with the original ImportError chained so the
+        # traceback shows the exact module/line that failed to import
+        # (typically inside code_context.embedding's llama_cpp/torch
+        # imports). The hint message helps the most common cause —
+        # missing install group — without hiding deeper failures.
+        raise RuntimeError(
+            "code_context.indexing failed to import. "
+            "If `code-context` itself is missing, run `uv sync --group code-search`. "
+            "If the package is installed, the chained ImportError below points at the "
+            "real failure (typically a torch/llama_cpp/CUDA runtime mismatch)."
+        ) from _import_error
 
     print(f"Fetching repositories for organization: {org_name}")
     headers = {"Accept": "application/vnd.github.v3+json"}
