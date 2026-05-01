@@ -510,10 +510,12 @@ def create_mcp_server() -> FastMCP:
 
     Returns:
         A FastMCP server instance with entity CRUD tools plus code search tools.
-        If no authentication token is available, only code search tools are registered.
+        Entity tools register whenever the OpenAPI spec is reachable — auth is
+        resolved per-request inside each handler, not at registration time. If
+        the OpenAPI fetch fails, only code search tools are registered.
 
     Raises:
-        SystemExit: If REQUIRE_AUTH is set and no valid token is found.
+        SystemExit: If REQUIRE_AUTH is set and no authentication path is available.
     """
     # Create base MCP server. `auth` is None unless OAUTH_AS_URL is set,
     # in which case FastMCP mounts the RFC 9728 protected-resource

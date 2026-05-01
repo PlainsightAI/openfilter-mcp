@@ -141,10 +141,12 @@ def _walk_functions(tree: ast.AST):
                 # Allowlisted: don't yield this function and don't recurse inside.
                 continue
             yield node
-        # Recurse into classes, conditional blocks, etc. so nested functions
-        # don't slip past unchecked.
-        if isinstance(node, (ast.ClassDef, ast.If, ast.Try, ast.With, ast.AsyncWith)):
-            yield from _walk_functions(node)
+            # Don't recurse into the function body; _function_violates handles it.
+            continue
+        # Recurse into every other compound node — class bodies, control-flow
+        # blocks, exception handlers, match cases, etc. — so a function
+        # defined in any of them is still reached.
+        yield from _walk_functions(node)
 
 
 def test_src_root_exists():
