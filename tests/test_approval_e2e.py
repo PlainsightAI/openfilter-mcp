@@ -113,7 +113,7 @@ def mcp_server() -> FastMCP:
             "openfilter_mcp.server.create_authenticated_client",
             return_value=_make_mock_client(),
         ),
-        patch("openfilter_mcp.server.read_psctl_token", return_value="test-token"),
+        patch("openfilter_mcp.entity_tools.read_psctl_token", return_value="test-token"),
     ):
         from openfilter_mcp.server import create_mcp_server
 
@@ -137,7 +137,7 @@ def _make_mcp_server_with_client(mock_client):
             "openfilter_mcp.server.create_authenticated_client",
             return_value=mock_client,
         ),
-        patch("openfilter_mcp.server.read_psctl_token", return_value="test-token"),
+        patch("openfilter_mcp.entity_tools.read_psctl_token", return_value="test-token"),
     ):
         from openfilter_mcp.server import create_mcp_server
 

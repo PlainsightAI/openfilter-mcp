@@ -915,6 +915,15 @@ class EntityToolsHandler:
         it overrides the default server token for this request. The scoped token's
         org_id is also used automatically.
 
+        Outbound Authorization: scoped session token (user-approved via
+        request_scoped_token) → static psctl/OPENFILTER_TOKEN → explicit
+        PermissionError. The request OAuth bearer is intentionally NOT in
+        this chain; consuming it here would bypass the elicitation gate.
+        The single sanctioned exception is `server._resolve_bootstrap_auth`
+        for the /api-tokens POST that creates the session-scoped token.
+        That invariant is enforced by `tests/test_security_invariant.py`,
+        which AST-scans this file for the forbidden patterns.
+
         Args:
             org_id: Optional cross-tenant org ID override.
             ctx: FastMCP Context for accessing session state.

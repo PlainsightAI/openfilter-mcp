@@ -97,8 +97,23 @@ class TestAuthenticatedClient:
         assert client.headers["Authorization"] == "Bearer simple-token"
         assert "X-Scope-OrgID" not in client.headers
 
-    def test_create_authenticated_client_raises_without_token(self):
-        """Should raise AuthenticationError when no token available."""
+    def test_create_authenticated_client_no_token_does_not_raise(self):
+        """Default behavior: no token -> client without Authorization default.
+
+        Per-request handlers resolve auth at call time (session-scoped
+        token, psctl/env, or FastMCP-context OAuth bearer), so client
+        construction must succeed without a startup token.
+        """
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            from openfilter_mcp.server import create_authenticated_client
+
+            client = create_authenticated_client()
+
+        assert "Authorization" not in client.headers
+        assert "X-Scope-OrgID" not in client.headers
+
+    def test_create_authenticated_client_require_token_raises(self):
+        """Legacy require_token=True path still raises when no token."""
         with patch("openfilter_mcp.server.get_auth_token", return_value=None):
             from openfilter_mcp.server import (
                 create_authenticated_client,
@@ -106,24 +121,40 @@ class TestAuthenticatedClient:
             )
 
             with pytest.raises(AuthenticationError):
-                create_authenticated_client()
+                create_authenticated_client(require_token=True)
 
 
 class TestMCPServerCreation:
     """Tests for MCP server creation from OpenAPI spec."""
 
     def test_create_mcp_server_without_token_still_works(self):
-        """Should create MCP server without token (no OpenAPI tools, no polling)."""
+        """Without a startup token, server creation must succeed and
+        register entity + polling tools.
+
+        Auth is resolved per-request inside tool handlers (session-scoped
+        token from elicitation > psctl/env > FastMCP-context OAuth
+        bearer), so the registration path no longer gates on a startup
+        credential. The `if not has_auth` branch only logs a warning.
+        """
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {},
+        }
         with patch.dict(os.environ, {"REQUIRE_AUTH": "false"}):
             with patch("openfilter_mcp.server.get_auth_token", return_value=None):
                 with patch(
-                    "openfilter_mcp.server.get_latest_index_name",
-                    return_value="test-index",
+                    "openfilter_mcp.server.get_openapi_spec",
+                    return_value=mock_spec,
                 ):
-                    from openfilter_mcp.server import create_mcp_server
+                    with patch(
+                        "openfilter_mcp.server.get_latest_index_name",
+                        return_value="test-index",
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
 
-                    # This should NOT raise an exception
-                    mcp = create_mcp_server()
+                        # This should NOT raise an exception
+                        mcp = create_mcp_server()
 
         tool_names = _get_tool_names(mcp)
 
@@ -134,37 +165,69 @@ class TestMCPServerCreation:
             assert "get_chunk" in tool_names
             assert "read_file" in tool_names
 
-        # OpenAPI tools should NOT be available (no auth)
-        assert "list_projects" not in tool_names
+        # Entity tools register regardless of startup token — auth is
+        # enforced per-request by the handlers themselves.
+        assert "list_entity_types" in tool_names
+        assert "list_entities" in tool_names
 
-        # Polling tool should NOT be available (requires auth)
-        assert "poll_until_change" not in tool_names
+        # Polling tool registers alongside entity tools.
+        assert "poll_until_change" in tool_names
 
     def test_create_mcp_server_require_auth_fails_without_token(self):
         """Should raise SystemExit when REQUIRE_AUTH=true and no token is available."""
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}):
+        # `get_openapi_spec` is now fetched unconditionally at startup
+        # (decoupled from auth), so without a mock httpx.get would block
+        # for the full 30s timeout in offline / CI environments before
+        # the try/except catches it. Mock to keep this test hermetic.
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {},
+        }
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}, clear=False):
+            os.environ.pop("OAUTH_AS_URL", None)
             with patch("openfilter_mcp.server.get_auth_token", return_value=None):
-                from openfilter_mcp.server import create_mcp_server
+                with patch(
+                    "openfilter_mcp.server.get_openapi_spec",
+                    return_value=mock_spec,
+                ):
+                    from openfilter_mcp.server import create_mcp_server
 
-                with pytest.raises(SystemExit, match="REQUIRE_AUTH is set"):
-                    create_mcp_server()
+                    with pytest.raises(SystemExit, match="REQUIRE_AUTH is set"):
+                        create_mcp_server()
 
     def test_create_mcp_server_require_auth_fails_on_invalid_token(self):
-        """Should raise SystemExit when REQUIRE_AUTH=true and token is invalid."""
+        """Should raise SystemExit when REQUIRE_AUTH=true and client construction fails.
+
+        With `require_token=False` the AuthenticationError handler path
+        is dead under normal operation, but if a transport-level failure
+        ever surfaces it as AuthenticationError, REQUIRE_AUTH must still
+        fail-fast rather than serve a half-broken catalog.
+        """
         # Import AuthenticationError from server module to ensure class identity
         # matches the except clause (avoids beartype import-hook mismatch).
         from openfilter_mcp.server import AuthenticationError
 
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}):
+        mock_spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {},
+        }
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}, clear=False):
+            os.environ.pop("OAUTH_AS_URL", None)
             with patch("openfilter_mcp.server.get_auth_token", return_value="bad-token"):
                 with patch(
-                    "openfilter_mcp.server.create_authenticated_client",
-                    side_effect=AuthenticationError("token expired"),
+                    "openfilter_mcp.server.get_openapi_spec",
+                    return_value=mock_spec,
                 ):
-                    from openfilter_mcp.server import create_mcp_server
+                    with patch(
+                        "openfilter_mcp.server.create_authenticated_client",
+                        side_effect=AuthenticationError("token expired"),
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
 
-                    with pytest.raises(SystemExit, match="authentication failed"):
-                        create_mcp_server()
+                        with pytest.raises(SystemExit, match="authentication failed"):
+                            create_mcp_server()
 
     def test_create_mcp_server_require_auth_succeeds_with_token(self):
         """Should start normally when REQUIRE_AUTH=true and a valid token exists."""
@@ -297,6 +360,207 @@ class TestCodeSearchTools:
         ):
             with pytest.raises(FileNotFoundError):
                 _real_path("../../../etc/passwd")
+
+
+class TestBuildOAuthProvider:
+    """Tests for `_build_oauth_provider` — the OAuth gate constructor.
+
+    Audience list, issuer, algorithm, and JWKS URI all need to be correct
+    for tokens to verify, so each piece of the provider config gets its
+    own assertion here.
+    """
+
+    def test_returns_none_when_oauth_as_url_unset(self):
+        """No OAUTH_AS_URL → return None, server falls back to psctl path."""
+        from openfilter_mcp.server import _build_oauth_provider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OAUTH_AS_URL", None)
+            assert _build_oauth_provider() is None
+
+    def test_default_audience_list_when_unset(self):
+        """Default audience accepts BOTH the RFC 8707 binding (resource_url+/mcp)
+        AND the AS URL (iss-fallback for clients without resource=)."""
+        from openfilter_mcp.server import _build_oauth_provider
+
+        env = {
+            "OAUTH_AS_URL": "https://api.example.com",
+            "OAUTH_RESOURCE_URL": "https://mcp.example.com",
+            "PORT": "3000",
+        }
+        env_clear_keys = ["OAUTH_AUDIENCE"]
+        with patch.dict(os.environ, env, clear=False):
+            for key in env_clear_keys:
+                os.environ.pop(key, None)
+            mock_verifier = MagicMock()
+            mock_provider = MagicMock()
+            with patch(
+                "fastmcp.server.auth.providers.jwt.JWTVerifier",
+                return_value=mock_verifier,
+            ) as mock_verifier_cls:
+                with patch(
+                    "fastmcp.server.auth.RemoteAuthProvider",
+                    return_value=mock_provider,
+                ) as mock_provider_cls:
+                    result = _build_oauth_provider()
+
+        assert result is mock_provider
+        verifier_kwargs = mock_verifier_cls.call_args.kwargs
+        assert verifier_kwargs["audience"] == [
+            "https://mcp.example.com/mcp",
+            "https://api.example.com",
+        ]
+        assert verifier_kwargs["issuer"] == "https://api.example.com"
+        assert verifier_kwargs["algorithm"] == "ES256"
+        assert verifier_kwargs["jwks_uri"] == "https://api.example.com/.well-known/jwks.json"
+
+        provider_kwargs = mock_provider_cls.call_args.kwargs
+        assert provider_kwargs["authorization_servers"] == ["https://api.example.com"]
+        assert provider_kwargs["base_url"] == "https://mcp.example.com"
+
+    def test_oauth_audience_env_override(self):
+        """OAUTH_AUDIENCE replaces the default audience list entirely."""
+        from openfilter_mcp.server import _build_oauth_provider
+
+        env = {
+            "OAUTH_AS_URL": "https://api.example.com",
+            "OAUTH_RESOURCE_URL": "https://mcp.example.com",
+            "OAUTH_AUDIENCE": "custom-aud, second-aud  ,",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch(
+                "fastmcp.server.auth.providers.jwt.JWTVerifier"
+            ) as mock_verifier_cls:
+                with patch("fastmcp.server.auth.RemoteAuthProvider"):
+                    _build_oauth_provider()
+
+        verifier_kwargs = mock_verifier_cls.call_args.kwargs
+        # Stripped of whitespace; empty trailing token dropped.
+        assert verifier_kwargs["audience"] == ["custom-aud", "second-aud"]
+
+    def test_trailing_slashes_stripped(self):
+        """as_url and resource_url shouldn't accumulate trailing slashes
+        when env values are pasted with one."""
+        from openfilter_mcp.server import _build_oauth_provider
+
+        env = {
+            "OAUTH_AS_URL": "https://api.example.com/",
+            "OAUTH_RESOURCE_URL": "https://mcp.example.com/",
+        }
+        env_clear_keys = ["OAUTH_AUDIENCE"]
+        with patch.dict(os.environ, env, clear=False):
+            for key in env_clear_keys:
+                os.environ.pop(key, None)
+            with patch(
+                "fastmcp.server.auth.providers.jwt.JWTVerifier"
+            ) as mock_verifier_cls:
+                with patch(
+                    "fastmcp.server.auth.RemoteAuthProvider"
+                ) as mock_provider_cls:
+                    _build_oauth_provider()
+
+        verifier_kwargs = mock_verifier_cls.call_args.kwargs
+        assert verifier_kwargs["jwks_uri"] == "https://api.example.com/.well-known/jwks.json"
+        assert verifier_kwargs["issuer"] == "https://api.example.com"
+        # Default audience uses the cleaned values.
+        assert "https://mcp.example.com/mcp" in verifier_kwargs["audience"]
+        provider_kwargs = mock_provider_cls.call_args.kwargs
+        assert provider_kwargs["base_url"] == "https://mcp.example.com"
+
+
+class TestResolveBootstrapAuth:
+    """Tests for `_resolve_bootstrap_auth` — the credential precedence
+    used by /api-tokens when bootstrapping the elicitation flow.
+
+    The order (psctl/env > FastMCP-context OAuth bearer) is a security
+    invariant: in mixed deployments the long-lived primary credential
+    must take precedence so that a request with a narrow OAuth bearer
+    can't be elevated to using a broad psctl token. (And in OAuth-only
+    deployments, the OAuth bearer is the only available credential.)
+    """
+
+    def test_returns_psctl_env_token_when_present(self):
+        """Primary credential takes precedence over the OAuth fallback."""
+        from openfilter_mcp.server import _resolve_bootstrap_auth
+
+        with patch(
+            "openfilter_mcp.server.get_auth_token", return_value="psctl-token"
+        ):
+            # Even if the OAuth dependency is importable, it must not be consulted.
+            with patch(
+                "fastmcp.server.dependencies.get_access_token"
+            ) as mock_get_access:
+                result = _resolve_bootstrap_auth()
+
+        assert result == "psctl-token"
+        mock_get_access.assert_not_called()
+
+    def test_falls_through_to_oauth_bearer_when_no_psctl(self):
+        """OAuth-only mode: psctl is empty → consult fastmcp request bearer."""
+        from openfilter_mcp.server import _resolve_bootstrap_auth
+
+        mock_access = MagicMock()
+        mock_access.token = "oauth-bearer-xyz"
+
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=mock_access,
+            ):
+                result = _resolve_bootstrap_auth()
+
+        assert result == "oauth-bearer-xyz"
+
+    def test_returns_none_when_oauth_dependency_missing(self):
+        """Older fastmcp without `dependencies` module: psctl-only mode."""
+        from openfilter_mcp.server import _resolve_bootstrap_auth
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fastmcp.server.dependencies":
+                raise ImportError("no such module")
+            return real_import(name, *args, **kwargs)
+
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            with patch.object(builtins, "__import__", side_effect=fake_import):
+                result = _resolve_bootstrap_auth()
+
+        assert result is None
+
+    def test_returns_none_when_oauth_context_missing(self):
+        """Importable but no request context active → return None gracefully."""
+        from openfilter_mcp.server import _resolve_bootstrap_auth
+
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=None,
+            ):
+                result = _resolve_bootstrap_auth()
+
+        assert result is None
+
+    def test_logs_debug_on_unexpected_failure(self, caplog):
+        """Unexpected runtime failures in get_access_token() get logged at
+        DEBUG so OAuth-mode operators can diagnose silent breakage."""
+        import logging as _logging
+        from openfilter_mcp.server import _resolve_bootstrap_auth
+
+        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                side_effect=RuntimeError("missing request context"),
+            ):
+                with caplog.at_level(_logging.DEBUG, logger="openfilter_mcp.server"):
+                    result = _resolve_bootstrap_auth()
+
+        assert result is None
+        assert any(
+            "get_access_token() failed during bootstrap" in rec.message
+            for rec in caplog.records
+        )
 
 
 class TestSchemaStripping:
