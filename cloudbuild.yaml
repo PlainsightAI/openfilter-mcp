@@ -36,6 +36,11 @@ steps:
         # Auto-detect slim-only from tag name (e.g. v1.0.0-slim-dev)
         SLIM_ONLY="${_SLIM_ONLY}"
         if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
+        # Compute the DockerHub :latest{,-slim} version up here in cloud-sdk
+        # (which has python3) so the docker steps don't need any JSON tooling.
+        # Runs before the SLIM_ONLY exit so slim-only builds also get the file.
+        python3 scripts/lookup_latest_version.py --latest-tag latest --suffix= > /workspace/.latest_version
+        python3 scripts/lookup_latest_version.py --latest-tag latest-slim --suffix=-slim > /workspace/.latest_version-slim
         if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping index build"; exit 0; fi
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
