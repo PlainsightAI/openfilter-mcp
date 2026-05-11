@@ -31,10 +31,15 @@ on:
         type: boolean
         default: false
 
-# One bump in flight per ref. Newer tag wins; superseded shards die fast
-# rather than racing to push competing branches into gitops.
+# Serialize the whole pipeline (key is ref-independent on purpose). With
+# `${{ github.ref }}` in the key, two tags fired close together would land
+# in distinct groups and race — if v1.2.3's slim image takes longer to
+# publish than v1.2.4's, the older job can finish second and
+# `open-mechanical-pr`'s supersede step would close v1.2.4's bump PR as
+# stale. Ref-less group + cancel-in-progress gives the actual "newer tag
+# wins" guarantee: a newer tag arriving mid-poll cancels the older one.
 concurrency:
-  group: release-tag-bump-gitops-${{ github.ref }}
+  group: release-tag-bump-gitops
   cancel-in-progress: true
 
 env:
@@ -112,9 +117,9 @@ jobs:
         run: |
           set -euo pipefail
           # Token in the URL only — avoid mutating ~/.gitconfig with a
-          # persistent credential helper. The override defeats any prior
-          # extraheader that might have been left by an actions/checkout
-          # earlier in the job.
+          # persistent credential helper. The empty extraheader override is
+          # defense-in-depth: it forces this clone to use only the URL-
+          # embedded token, ignoring any global http.extraheader.
           git -c "http.https://github.com/.extraheader=" \
               clone --depth 1 \
               "https://x-access-token:${GH_TOKEN}@github.com/${GITOPS_REPO}.git" \
@@ -145,6 +150,14 @@ jobs:
           set -euo pipefail
           # yq is preinstalled on ubuntu-latest runners (mikefarah/yq v4).
           OLD_TAG=$(yq '.image.tag' "gitops/${GITOPS_BUMP_PATH}")
+          # yq prints the literal "null" for a missing key, which would slip
+          # past the `=` compare below and let the writer silently *create*
+          # `.image.tag` if DT-130 ever moves it (e.g. nested under a slim
+          # override). Fail loudly instead of opening a structurally-wrong PR.
+          if [ -z "$OLD_TAG" ] || [ "$OLD_TAG" = "null" ]; then
+            echo "::error::image.tag missing from gitops/${GITOPS_BUMP_PATH} — refusing to bump (schema regression?)."
+            exit 1
+          fi
           if [ "$OLD_TAG" = "$NEW_TAG" ]; then
             echo "image.tag already at ${NEW_TAG} — no diff. open-mechanical-pr will no-op."
           else
