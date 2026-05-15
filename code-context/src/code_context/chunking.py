@@ -137,9 +137,9 @@ def chunk_document_ast(
     try:
         # Get the parser for this language
         parser = get_parser(ts_language)
-        tree = parser.parse(bytes(document, "utf-8"))
+        tree = parser.parse(document)
 
-        if not tree.root_node:
+        if tree.root_node() is None:
             # Failed to parse, fall back to character-based chunking
             return chunk_document(document, chunk_size, chunk_overlap)
 
@@ -152,7 +152,7 @@ def chunk_document_ast(
             return chunk_document(document, chunk_size, chunk_overlap)
 
         # Extract chunks based on AST nodes
-        chunks = extract_chunks_from_ast(tree.root_node, document, splittable_types)
+        chunks = extract_chunks_from_ast(tree, document, splittable_types)
 
         # If no chunks found, fall back to character-based
         if not chunks:
@@ -174,42 +174,41 @@ def chunk_document_ast(
 
 
 def extract_chunks_from_ast(
-    node, code: str, splittable_types: List[str]
+    tree, code: str, splittable_types: List[str]
 ) -> List[Dict[str, Any]]:
     """
-    Traverse the AST and extract chunks based on splittable node types.
+    Traverse the AST via a tree-sitter cursor and extract chunks for splittable nodes.
     """
-    chunks = []
-    code_bytes = bytes(code, "utf-8")
+    chunks: List[Dict[str, Any]] = []
+    code_bytes = code.encode("utf-8")
+    splittable = set(splittable_types)
+    cursor = tree.walk()
 
-    def traverse(current_node):
-        # Check if this node type should be split into a chunk
-        if current_node.type in splittable_types:
-            start_line = current_node.start_point[0] + 1  # 1-indexed
-            end_line = current_node.end_point[0] + 1
-            start_byte = current_node.start_byte
-            end_byte = current_node.end_byte
+    def visit():
+        while True:
+            node = cursor.node()
+            if node.kind() in splittable:
+                br = node.byte_range()
+                sp = node.start_position()
+                ep = node.end_position()
+                node_text = code_bytes[br.start : br.end].decode("utf-8", errors="replace")
+                if node_text.strip():
+                    chunks.append(
+                        {
+                            "content": node_text,
+                            "startLine": sp.row + 1,
+                            "endLine": ep.row + 1,
+                            "startByte": br.start,
+                            "endByte": br.end,
+                        }
+                    )
+            if cursor.goto_first_child():
+                visit()
+                cursor.goto_parent()
+            if not cursor.goto_next_sibling():
+                break
 
-            # Extract the node text
-            node_text = code_bytes[start_byte:end_byte].decode("utf-8")
-
-            # Only create chunk if it has meaningful content
-            if node_text.strip():
-                chunks.append(
-                    {
-                        "content": node_text,
-                        "startLine": start_line,
-                        "endLine": end_line,
-                        "startByte": start_byte,
-                        "endByte": end_byte,
-                    }
-                )
-
-        # Continue traversing child nodes
-        for child in current_node.children:
-            traverse(child)
-
-    traverse(node)
+    visit()
 
     # If no meaningful chunks found, create a single chunk with the entire code
     if not chunks:
