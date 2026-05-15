@@ -48,6 +48,7 @@ steps:
         gcloud run jobs update index-builder --region=${_REGION} \
           --image=nvidia/cuda:13.2.1-devel-ubuntu22.04 \
           --command=bash \
+          --task-timeout=14400 \
           --set-env-vars=HF_TOKEN="$$HF_TOKEN" \
           --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv python install 3.12; export CMAKE_ARGS='-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;86-real;89-real;90-real'; uv sync --python 3.12 --group code-search; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
@@ -98,4 +99,4 @@ options:
   diskSizeGb: 100
   logging: CLOUD_LOGGING_ONLY
 
-timeout: '7200s'  # 2 hours - multiplatform builds take ~90min
+timeout: '14400s'  # 4 hours - GPU indexing pass over plainsightai/* is ~2-3h
