@@ -45,11 +45,42 @@ steps:
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
 
-        gcloud run jobs update index-builder --region=${_REGION} \
+        # `gcloud run jobs update` doesn't expose --gpu — switched to `deploy`,
+        # which is create-or-update. NVIDIA L4 in us-central1 requires:
+        # >= 4 CPU and >= 16Gi memory (Cloud Run Jobs GPU minimum). Quota:
+        # 3 L4 GPUs in us-central1 with --no-gpu-zonal-redundancy. Without
+        # GPU the build runs llama-cpp-python on CPU at ~30 tok/s and exceeds
+        # the 4h task timeout — the compute_50 → CMAKE_ARGS fix above let
+        # it compile; this is what lets it actually finish.
+        #
+        # Cloud Run Jobs with GPU enforce a hard 3600s (1h) per-task ceiling
+        # — the 14400s bump on a249aff above doesn't apply when --gpu is set.
+        # L4 indexing should finish well inside that; if a future corpus
+        # bump pushes past 1h on GPU, the right move is splitting the index
+        # pass into batches, not dropping --gpu (CPU was 50-100x slower).
+        #
+        # cuda-compat-13-2 + LD_LIBRARY_PATH bridge the gap between the
+        # CUDA 13.2 toolkit baked into the base image and the (older) host
+        # driver Cloud Run provisions. Forward compat is officially scoped
+        # to within-major-family upgrades on data center GPUs; cross-major
+        # (CUDA 13 toolkit on R5xx/CUDA 12 host driver) is undocumented but
+        # worth trying before reverting the toolkit. nvidia-smi is invoked
+        # twice — bare and after compat install — so the actual host
+        # driver version surfaces in logs regardless of whether the bridge
+        # works. If `ggml_cuda_init` still fails, the next move is reverting
+        # to nvidia/cuda:12.4.0-devel-ubuntu22.04 (the pre-e378fbf image).
+        gcloud run jobs deploy index-builder --region=${_REGION} \
           --image=nvidia/cuda:13.2.1-devel-ubuntu22.04 \
           --command=bash \
+          --task-timeout=3600 \
+          --gpu=1 \
+          --gpu-type=nvidia-l4 \
+          --no-gpu-zonal-redundancy \
+          --cpu=8 \
+          --memory=32Gi \
+          --max-retries=0 \
           --set-env-vars=HF_TOKEN="$$HF_TOKEN" \
-          --args="-c,set -ex; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv python install 3.12; uv sync --python 3.12 --group code-search; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
+          --args="-c,set -ex; nvidia-smi || true; apt-get update && apt-get install -y git gcc g++ cmake curl python3 python3-pip cuda-compat-13-2; export LD_LIBRARY_PATH=/usr/local/cuda/compat:\$$LD_LIBRARY_PATH; nvidia-smi || true; curl -LsSf https://astral.sh/uv/install.sh | sh; curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts; export PATH=/root/.local/bin:/root/google-cloud-sdk/bin:\$$PATH; cd /tmp; gcloud storage cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz .; tar xzf src.tar.gz; uv python install 3.12; export CMAKE_ARGS='-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;86-real;89-real;90-real'; uv sync --python 3.12 --group code-search; uv run index; tar czf idx.tar.gz indexes/ openfilter_repos_clones/; gcloud storage cp idx.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz"
 
         gcloud run jobs execute index-builder --region=${_REGION} --wait
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
@@ -98,4 +129,4 @@ options:
   diskSizeGb: 100
   logging: CLOUD_LOGGING_ONLY
 
-timeout: '7200s'  # 2 hours - multiplatform builds take ~90min
+timeout: '14400s'  # 4 hours - GPU indexing pass over plainsightai/* is ~2-3h
