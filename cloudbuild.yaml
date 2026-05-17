@@ -4,6 +4,12 @@
 #   Dev tag (v*-dev) → GAR oci registry (dev testing, no DockerHub)
 #   Release tag (v*) → DockerHub (production, latest if semver >= current)
 #
+# The slim build is decoupled from the full build:
+#   - index/full steps use allowFailure: true so a failure there does not
+#     stop the slim step from running and pushing.
+#   - slim waitFor's only the auth prelude (not index/full), so it runs in
+#     parallel with the GPU index job (~2-3h) instead of waiting on it.
+#
 # Dry-run by default — set _DRY_RUN=false in the Terraform trigger to actually push.
 
 substitutions:
@@ -25,8 +31,29 @@ availableSecrets:
       env: 'HF_TOKEN'
 
 steps:
+  # Step 0: Prelude — write the GAR access token so the slim build can start
+  # in parallel with the index step. PR / dev tag builds push to GAR and read
+  # this token in scripts/docker-build.sh; release tag builds skip it and the
+  # file is simply absent.
+  - id: 'gar-auth'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev(-slim)?$$ ]] || [[ "${TAG_NAME}" =~ ^v.*-slim-dev$$ ]]; then
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          gcloud auth print-access-token > /workspace/.gar_token
+        else
+          echo "Release build: GAR auth not needed"
+        fi
+
   # Step 1: Upload source, run GPU job, download index
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - id: 'index'
+    waitFor: ['gar-auth']
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    allowFailure: true  # full-pipeline failures must not block the slim push
     entrypoint: 'bash'
     secretEnv: ['HF_TOKEN']
     args:
@@ -86,15 +113,11 @@ steps:
         gsutil cp gs://${_GCS_BUCKET}/builds/${BUILD_ID}/idx.tar.gz /workspace/
         tar xzf /workspace/idx.tar.gz -C /workspace/
 
-        # Configure GAR auth for PR and dev builds
-        if [[ -n "${_PR_NUMBER}" ]] || [[ "${TAG_NAME}" =~ ^v.*-dev(-slim)?$$ ]] || [[ "${TAG_NAME}" =~ ^v.*-slim-dev$$ ]]; then
-          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
-          ACCESS_TOKEN=$$(gcloud auth print-access-token)
-          echo "$$ACCESS_TOKEN" > /workspace/.gar_token
-        fi
-
   # Step 2: Full Docker build (GPU image with code-context + indexes)
-  - name: 'gcr.io/cloud-builders/docker'
+  - id: 'full-build'
+    waitFor: ['index']
+    name: 'gcr.io/cloud-builders/docker'
+    allowFailure: true  # full-build failures must not block the slim push
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     env: &docker-env
@@ -111,8 +134,13 @@ steps:
         if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping full build"; exit 0; fi
         bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest" --platform linux/amd64
 
-  # Step 3: Slim Docker build (no code-context, no indexes, no ML deps)
-  - name: 'gcr.io/cloud-builders/docker'
+  # Step 3: Slim Docker build (no code-context, no indexes, no ML deps).
+  # Runs in parallel with the index/full pipeline — only depends on gar-auth
+  # for PR/dev token, and the slim DockerHub-latest lookup is self-contained
+  # in docker-build.sh (no shared workspace state with the full build).
+  - id: 'slim-build'
+    waitFor: ['gar-auth']
+    name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     env: *docker-env
@@ -121,7 +149,8 @@ steps:
       - bash scripts/docker-build.sh --dockerfile Dockerfile.slim --tag-suffix "-slim" --latest-tag "latest-slim"
 
   # Step 4: Cleanup build artifacts from GCS
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - waitFor: ['index', 'full-build', 'slim-build']
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     args: ['bash', '-c', 'gsutil -m rm -r gs://${_GCS_BUCKET}/builds/${BUILD_ID}/ || true']
 
 options:
