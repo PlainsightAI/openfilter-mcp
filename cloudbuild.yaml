@@ -31,10 +31,12 @@ availableSecrets:
       env: 'HF_TOKEN'
 
 steps:
-  # Step 0: Prelude — write the GAR access token so the slim build can start
-  # in parallel with the index step. PR / dev tag builds push to GAR and read
-  # this token in scripts/docker-build.sh; release tag builds skip it and the
-  # file is simply absent.
+  # Step 0: Prelude — write the GAR access token and the DockerHub-latest
+  # version files. Both the index step and the slim step depend on this
+  # output (slim reads /workspace/.latest_version-slim in docker-build.sh),
+  # and slim runs in parallel with index, so the lookup MUST happen here —
+  # not inside the index step — to avoid a read-before-write race that
+  # would make slim treat every release as a downgrade-safe latest bump.
   - id: 'gar-auth'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
@@ -48,6 +50,11 @@ steps:
         else
           echo "Release build: GAR auth not needed"
         fi
+        # Computed up here in cloud-sdk (which has python3) so the docker
+        # steps don't need any JSON tooling. Runs unconditionally — both
+        # release and slim-only tags need these files downstream.
+        python3 scripts/lookup_latest_version.py --latest-tag latest --suffix= > /workspace/.latest_version
+        python3 scripts/lookup_latest_version.py --latest-tag latest-slim --suffix=-slim > /workspace/.latest_version-slim
 
   # Step 1: Upload source, run GPU job, download index
   - id: 'index'
@@ -63,11 +70,6 @@ steps:
         # Auto-detect slim-only from tag name (e.g. v1.0.0-slim-dev)
         SLIM_ONLY="${_SLIM_ONLY}"
         if [[ "${TAG_NAME}" == *slim* ]]; then SLIM_ONLY=true; fi
-        # Compute the DockerHub :latest{,-slim} version up here in cloud-sdk
-        # (which has python3) so the docker steps don't need any JSON tooling.
-        # Runs before the SLIM_ONLY exit so slim-only builds also get the file.
-        python3 scripts/lookup_latest_version.py --latest-tag latest --suffix= > /workspace/.latest_version
-        python3 scripts/lookup_latest_version.py --latest-tag latest-slim --suffix=-slim > /workspace/.latest_version-slim
         if [[ "$$SLIM_ONLY" == "true" ]]; then echo "SLIM_ONLY: skipping index build"; exit 0; fi
         tar czf /tmp/src.tar.gz --exclude='.git' --exclude='indexes' .
         gsutil cp /tmp/src.tar.gz gs://${_GCS_BUCKET}/builds/${BUILD_ID}/src.tar.gz
