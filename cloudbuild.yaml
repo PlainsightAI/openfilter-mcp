@@ -4,6 +4,10 @@
 #   Dev tag (v*-dev) → GAR oci registry (dev testing, no DockerHub)
 #   Release tag (v*) → DockerHub (production, latest if semver >= current)
 #
+# The slim build is decoupled from the full build: index/full steps use
+# allowFailure: true so a failure there does not stop the slim step from
+# running and pushing to production.
+#
 # Dry-run by default — set _DRY_RUN=false in the Terraform trigger to actually push.
 
 substitutions:
@@ -27,6 +31,7 @@ availableSecrets:
 steps:
   # Step 1: Upload source, run GPU job, download index
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    allowFailure: true  # full-pipeline failures must not block the slim push
     entrypoint: 'bash'
     secretEnv: ['HF_TOKEN']
     args:
@@ -59,6 +64,7 @@ steps:
 
   # Step 2: Full Docker build (GPU image with code-context + indexes)
   - name: 'gcr.io/cloud-builders/docker'
+    allowFailure: true  # full-build failures must not block the slim push
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     env: &docker-env
