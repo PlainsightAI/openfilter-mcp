@@ -37,7 +37,7 @@ steps:
   # and slim runs in parallel with index, so the lookup MUST happen here —
   # not inside the index step — to avoid a read-before-write race that
   # would make slim treat every release as a downgrade-safe latest bump.
-  - id: 'gar-auth'
+  - id: 'prelude'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -58,7 +58,7 @@ steps:
 
   # Step 1: Upload source, run GPU job, download index
   - id: 'index'
-    waitFor: ['gar-auth']
+    waitFor: ['prelude']
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     allowFailure: true  # full-pipeline failures must not block the slim push
     entrypoint: 'bash'
@@ -137,11 +137,11 @@ steps:
         bash scripts/docker-build.sh --dockerfile Dockerfile.gpu --tag-suffix "" --latest-tag "latest" --platform linux/amd64
 
   # Step 3: Slim Docker build (no code-context, no indexes, no ML deps).
-  # Runs in parallel with the index/full pipeline — only depends on gar-auth
-  # for PR/dev token, and the slim DockerHub-latest lookup is self-contained
-  # in docker-build.sh (no shared workspace state with the full build).
+  # Runs in parallel with the index/full pipeline — depends on prelude
+  # for both the PR/dev token and the DockerHub-latest version files
+  # (written by the prelude so this step doesn't race the index step).
   - id: 'slim-build'
-    waitFor: ['gar-auth']
+    waitFor: ['prelude']
     name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
