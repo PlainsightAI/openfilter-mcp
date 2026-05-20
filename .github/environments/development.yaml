@@ -1,0 +1,16 @@
+# Declarative GitHub Environment config. Applied to this repo by
+# .github/workflows/apply-environments.yaml on every push to main that
+# touches .github/environments/**. The environment name is the
+# filename (development) — the body below is the PUT payload for
+# /repos/{owner}/{repo}/environments/development verbatim.
+#
+# development: no approval gate — the deploy-service.yaml `development`
+# job proceeds unattended.
+wait_timer: 0
+reviewers: []
+# Deploys may only target this environment from a protected branch
+# (main). The Deployments workflow only ever deploys from main; this
+# blocks a stray workflow_dispatch from a feature branch.
+deployment_branch_policy:
+  protected_branches: true
+  custom_branch_policies: false

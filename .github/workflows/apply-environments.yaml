@@ -1,0 +1,55 @@
+# apply-environments.yaml — Self-applying GitHub Environment config.
+# Each .github/environments/<name>.yaml is the PUT payload for the
+# environment named <name>; this workflow syncs them to the repo on
+# every push to main. Mirrors gitops's apply-rulesets.yaml, but for the
+# environments API (rulesets cannot express environment protection).
+name: Apply environments
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/environments/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never let two syncs interleave PUTs against the same environment.
+concurrency:
+  group: apply-environments
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync environments to repo
+        env:
+          # GH_BOT_USER_PAT, not GITHUB_TOKEN: writing environments needs
+          # administration:write, which the intrinsic token does not
+          # carry without an explicit grant. Same reason apply-rulesets
+          # uses the bot PAT.
+          GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # yq (mikefarah v4) is preinstalled on ubuntu-latest runners.
+          files=(.github/environments/*.yaml .github/environments/*.yml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No environment files found under .github/environments/"
+            exit 0
+          fi
+          for file in "${files[@]}"; do
+            # Environment name is the filename without extension.
+            name=${file##*/}; name=${name%.*}
+            payload=$(yq -o=json "$file")
+            echo "::group::Syncing environment '$name' from $file"
+            # PUT is create-or-update and idempotent — no need to check
+            # whether the environment already exists first.
+            printf '%s' "$payload" | gh api -X PUT "/repos/$REPO/environments/$name" --input -
+            echo "::endgroup::"
+          done

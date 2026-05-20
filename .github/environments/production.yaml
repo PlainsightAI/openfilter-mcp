@@ -1,0 +1,25 @@
+# Declarative GitHub Environment config. Applied to this repo by
+# .github/workflows/apply-environments.yaml on every push to main that
+# touches .github/environments/**. The environment name is the
+# filename (production) — the body below is the PUT payload for
+# /repos/{owner}/{repo}/environments/production verbatim.
+#
+# production: the deploy-service.yaml `production` job pauses for manual
+# approval from the Machine Learning team before it runs. development
+# and staging deploy first and unattended, so a bad image is visible
+# in two lower environments before anyone is asked to approve prod.
+wait_timer: 0
+# The actor who triggered the deploy cannot approve their own prod run.
+prevent_self_review: true
+reviewers:
+  # Machine Learning team (slug: machine-learning, id: 10497208). The
+  # reviewers API takes the numeric team id, not the slug — re-resolve with:
+  #   gh api orgs/PlainsightAI/teams/machine-learning --jq .id
+  - type: Team
+    id: 10497208
+# Deploys may only target this environment from a protected branch
+# (main). The Deployments workflow only ever deploys from main; this
+# blocks a stray workflow_dispatch from a feature branch.
+deployment_branch_policy:
+  protected_branches: true
+  custom_branch_policies: false
