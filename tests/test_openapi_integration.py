@@ -481,10 +481,10 @@ class TestResolveBootstrapAuth:
 
     def test_returns_psctl_env_token_when_present(self):
         """Primary credential takes precedence over the OAuth fallback."""
-        from openfilter_mcp.server import _resolve_bootstrap_auth
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
 
         with patch(
-            "openfilter_mcp.server.get_auth_token", return_value="psctl-token"
+            "openfilter_mcp.auth.get_auth_token", return_value="psctl-token"
         ):
             # Even if the OAuth dependency is importable, it must not be consulted.
             with patch(
@@ -497,12 +497,12 @@ class TestResolveBootstrapAuth:
 
     def test_falls_through_to_oauth_bearer_when_no_psctl(self):
         """OAuth-only mode: psctl is empty → consult fastmcp request bearer."""
-        from openfilter_mcp.server import _resolve_bootstrap_auth
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
 
         mock_access = MagicMock()
         mock_access.token = "oauth-bearer-xyz"
 
-        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
             with patch(
                 "fastmcp.server.dependencies.get_access_token",
                 return_value=mock_access,
@@ -513,7 +513,7 @@ class TestResolveBootstrapAuth:
 
     def test_returns_none_when_oauth_dependency_missing(self):
         """Older fastmcp without `dependencies` module: psctl-only mode."""
-        from openfilter_mcp.server import _resolve_bootstrap_auth
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
         import builtins
 
         real_import = builtins.__import__
@@ -523,7 +523,7 @@ class TestResolveBootstrapAuth:
                 raise ImportError("no such module")
             return real_import(name, *args, **kwargs)
 
-        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
             with patch.object(builtins, "__import__", side_effect=fake_import):
                 result = _resolve_bootstrap_auth()
 
@@ -531,9 +531,9 @@ class TestResolveBootstrapAuth:
 
     def test_returns_none_when_oauth_context_missing(self):
         """Importable but no request context active → return None gracefully."""
-        from openfilter_mcp.server import _resolve_bootstrap_auth
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
 
-        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
             with patch(
                 "fastmcp.server.dependencies.get_access_token",
                 return_value=None,
@@ -546,14 +546,14 @@ class TestResolveBootstrapAuth:
         """Unexpected runtime failures in get_access_token() get logged at
         DEBUG so OAuth-mode operators can diagnose silent breakage."""
         import logging as _logging
-        from openfilter_mcp.server import _resolve_bootstrap_auth
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
 
-        with patch("openfilter_mcp.server.get_auth_token", return_value=None):
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
             with patch(
                 "fastmcp.server.dependencies.get_access_token",
                 side_effect=RuntimeError("missing request context"),
             ):
-                with caplog.at_level(_logging.DEBUG, logger="openfilter_mcp.server"):
+                with caplog.at_level(_logging.DEBUG, logger="openfilter_mcp.auth"):
                     result = _resolve_bootstrap_auth()
 
         assert result is None

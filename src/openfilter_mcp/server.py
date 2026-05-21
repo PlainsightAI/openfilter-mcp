@@ -43,6 +43,7 @@ from openfilter_mcp.auth import (
     is_plainsight_employee,
     AuthenticationError,
     TokenRefreshTransport,
+    _resolve_bootstrap_auth,
 )
 from openfilter_mcp.entity_tools import register_entity_tools, SESSION_TOKEN_KEY, SESSION_TOKEN_META_KEY, ALLOW_UNSCOPED_TOKEN
 from openfilter_mcp.approval_server import register_approval_routes
@@ -386,54 +387,6 @@ Tool usage tips:
 
 Note: By default, all API operations require a scoped token. You MUST call request_scoped_token before any entity operations. This requirement can be relaxed by setting OPF_MCP_ALLOW_UNSCOPED_TOKEN=true, but this is not recommended.
 """.strip()
-
-
-def _resolve_bootstrap_auth() -> str | None:
-    """Resolve the credential to use for the /api-tokens bootstrap call.
-
-    Order of preference:
-
-      1. `get_auth_token()` — psctl token file or OPENFILTER_TOKEN env.
-         Long-lived primary credential when present.
-      2. FastMCP request-context OAuth bearer — the user's just-
-         OAuth-approved access token, available in OAuth-only
-         deployments where (1) is empty.
-
-    Returns the raw bearer string or None if neither path has a
-    credential. Used ONLY by `_create_and_activate_token` for the
-    /api-tokens elicitation-bootstrap call. Entity ops do NOT
-    consume this — they go through `entity_tools._get_request_headers`
-    which requires a session-scoped token (the elicitation gate).
-    That gate stays intact regardless of which bootstrap credential
-    was used here.
-
-    The security invariant that entity ops MUST NOT consume the request
-    bearer is enforced at test time by `tests/test_security_invariant.py`,
-    which AST-scans every entity-op handler for the anti-pattern.
-    """
-    token = get_auth_token()
-    if token:
-        return token
-    # Fall through to the OAuth bearer if we're running OAuth-only.
-    # Importing the dependency here keeps the existing psctl-only
-    # deployment path from pulling in the FastMCP auth module.
-    try:
-        from fastmcp.server.dependencies import get_access_token  # type: ignore[import-not-found]
-    except ImportError:
-        # Older fastmcp without OAuth dependency module — psctl path only.
-        return None
-    try:
-        access = get_access_token()
-    except Exception as exc:
-        # get_access_token() reads from a contextvar populated by FastMCP's
-        # auth middleware. If the middleware isn't installed, the var is
-        # missing, or the context is corrupted, surface it at debug level
-        # so OAuth-only deploys can diagnose silent bootstrap failures.
-        logger.debug("get_access_token() failed during bootstrap: %s", exc)
-        return None
-    if access is not None:
-        return access.token
-    return None
 
 
 def _build_oauth_provider() -> Any:

@@ -198,8 +198,8 @@ def test_allowlisted_function_actually_uses_get_access_token():
     This is the *positive* form of the invariant: not just 'no one else
     does this' but 'precisely one place does, and we know which.'
     """
-    server_path = SRC_ROOT / "server.py"
-    tree = ast.parse(server_path.read_text(encoding="utf-8"))
+    auth_path = SRC_ROOT / "auth.py"
+    tree = ast.parse(auth_path.read_text(encoding="utf-8"))
 
     found_function = None
     for node in ast.walk(tree):
@@ -211,7 +211,7 @@ def test_allowlisted_function_actually_uses_get_access_token():
             break
 
     assert found_function is not None, (
-        "_resolve_bootstrap_auth not found in server.py — either it was "
+        "_resolve_bootstrap_auth not found in auth.py — either it was "
         "renamed (update _ALLOWLISTED_FUNCTIONS) or removed (drop the "
         "allowlist entry entirely)."
     )

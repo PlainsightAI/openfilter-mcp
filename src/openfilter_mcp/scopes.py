@@ -14,6 +14,8 @@ from typing import Any
 import httpx
 from fastmcp.server.context import Context
 
+from openfilter_mcp.auth import _resolve_bootstrap_auth
+
 logger = logging.getLogger(__name__)
 
 GRANTABLE_SCOPES_KEY = "rbac_grantable_scopes"
@@ -201,23 +203,10 @@ async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set
         cached = await ctx.get_state(GRANTABLE_SCOPES_KEY)
         if cached is not None:
             return set(cached)
-        # Resolve Authorization header from scoped session token or bootstrap token
         headers = {}
-        scoped_token = None
-        try:
-            scoped_token = await ctx.get_state("session_token")
-        except Exception:
-            pass
-        if scoped_token:
-            headers["Authorization"] = f"Bearer {scoped_token}"
-        else:
-            try:
-                from openfilter_mcp.server import _resolve_bootstrap_auth
-                bootstrap_token = _resolve_bootstrap_auth()
-                if bootstrap_token:
-                    headers["Authorization"] = f"Bearer {bootstrap_token}"
-            except Exception as e:
-                logger.warning("Failed to resolve bootstrap token for scopes fetch: %s", e)
-        scopes = await fetch_grantable_scopes(client, headers=headers if headers else None)
+        bootstrap_token = _resolve_bootstrap_auth()
+        if bootstrap_token:
+            headers["Authorization"] = f"Bearer {bootstrap_token}"
+        scopes = await fetch_grantable_scopes(client, headers=headers)
         await ctx.set_state(GRANTABLE_SCOPES_KEY, scopes)
         return set(scopes)
