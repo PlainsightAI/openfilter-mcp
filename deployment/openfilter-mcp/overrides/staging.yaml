@@ -1,0 +1,19 @@
+---
+replicaCount: 1
+
+plainsightApiUrl: "https://api.staging.plainsight.tech"
+
+oauth:
+  asUrl: "https://api.staging.plainsight.tech"
+  # resourceUrl defaults to https://<ingress.host> in the chart.
+
+ingress:
+  host: mcp.staging.plainsight.tech
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

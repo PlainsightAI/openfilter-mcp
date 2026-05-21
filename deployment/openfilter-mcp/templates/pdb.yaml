@@ -1,0 +1,17 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "openfilter-mcp.fullname" . }}
+  labels:
+    {{- include "openfilter-mcp.labels" . | nindent 4 }}
+spec:
+  # Pair with the soft podAntiAffinity in production overrides: anti-
+  # affinity asks for spread but doesn't enforce it; the PDB makes sure
+  # voluntary disruptions (node drains, autoscaler scale-down, surge
+  # rollouts) keep at least one replica serving.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "openfilter-mcp.selectorLabels" . | nindent 6 }}
+{{- end }}

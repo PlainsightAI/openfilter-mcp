@@ -1,0 +1,23 @@
+---
+replicaCount: 1
+
+plainsightApiUrl: "https://api.dev.plainsight.tech"
+
+oauth:
+  asUrl: "https://api.dev.plainsight.tech"
+  # resourceUrl defaults to https://<ingress.host> in the chart.
+
+ingress:
+  host: mcp.dev.plainsight.tech
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+image:
+  tag: latest-slim
+  pullPolicy: Always

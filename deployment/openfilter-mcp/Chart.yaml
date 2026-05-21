@@ -1,0 +1,9 @@
+apiVersion: v2
+name: openfilter-mcp
+description: Managed slim openfilter-mcp deployment (platform tools only — no code-search, no PVC, no GPU)
+type: application
+version: 0.1.0
+# image.tag is the source of truth and is bumped externally by release
+# automation; appVersion is intentionally pinned so it doesn't lag
+# behind and ship a misleading app.kubernetes.io/version label.
+appVersion: "0.0.0"

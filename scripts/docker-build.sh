@@ -123,7 +123,7 @@ else
     fi
   else
     echo "Main branch build: SHA ${SHORT_SHA} (${DOCKERFILE})"
-    TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}${TAG_SUFFIX}"
+    TAGS="-t ${_DOCKERHUB_REPO}:${SHORT_SHA}${TAG_SUFFIX} -t ${_DOCKERHUB_REPO}:${LATEST_TAG}"
   fi
 fi
 

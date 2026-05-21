@@ -1,0 +1,95 @@
+---
+# Defaults are intentionally inert — every meaningful field is set in
+# overrides/<env>.yaml. Anything left at "change.me" will fail Argo
+# sync rather than silently ship a wrong value.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: plainsightai/openfilter-mcp
+  # Immutable per-release tag — bumped by DT-131's
+  # release-tag-bump-gitops.yaml workflow on every openfilter-mcp tag
+  # push. IfNotPresent is safe now that the tag is immutable; pulls
+  # only happen when newly-scheduled pods are missing the layer.
+  tag: 0.2.3-slim
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+replicaCount: 1
+
+container:
+  port: 3000
+
+# PS_API_URL points the MCP server at the corresponding plainsight-api
+# instance for entity-tool calls. Set per-env in overrides.
+plainsightApiUrl: "change.me"
+
+# OAuth-only mode (DT-133). When `asUrl` is set, the MCP server mounts
+# RFC 9728 `/.well-known/oauth-protected-resource`, returns 401 with a
+# `WWW-Authenticate: Bearer ... resource_metadata="<url>"` header on
+# unauthenticated calls, and validates per-request bearer JWTs against
+# the AS's JWKS — no startup token, no service principal. This is what
+# satisfies the slim image's `REQUIRE_AUTH=true` gate in managed deploys.
+#
+# `resourceUrl` is the canonical public URL of *this* MCP server; the
+# AS-issued JWT's `aud` claim must match `<resourceUrl>/mcp`. It must
+# match the TLS-terminated ingress host (`https://<ingress.host>`) — if
+# they diverge, audience validation fails silently and every call 401s.
+# Defaults to `https://<ingress.host>` when unset, which is correct for
+# every env where the MCP server is reached via its own ingress. Only
+# set explicitly if the audience host legitimately differs from the
+# ingress host (uncommon).
+oauth:
+  asUrl: ""
+  resourceUrl: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+# Dockerfile.slim has no USER directive — image runs as root. Flip
+# runAsNonRoot once the upstream Dockerfile adds an unprivileged user.
+podSecurityContext:
+  runAsNonRoot: false
+  fsGroup: 0
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: "change.me"
+  clusterIssuer: cloud-dns
+  tlsSecretName: openfilter-mcp-tls
+  annotations:
+    # Force HTTPS — the ingress-nginx controller redirects plaintext to
+    # the TLS host; no plaintext acceptance.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # MCP tool calls proxy through plainsight-api → upstream LLM and
+    # routinely run longer than nginx's 60s default. Streaming/SSE
+    # responses are also long-lived by design. 300s gives those calls
+    # headroom without leaving idle connections open indefinitely.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
