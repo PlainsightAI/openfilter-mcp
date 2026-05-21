@@ -30,14 +30,14 @@ class ScopesUnavailable(RuntimeError):
         super().__init__(f"/rbac/scopes unavailable (status={status}): {detail}")
 
 
-async def fetch_grantable_scopes(client: httpx.AsyncClient) -> list[str]:
+async def fetch_grantable_scopes(client: httpx.AsyncClient, headers: dict[str, str] | None = None) -> list[str]:
     """GET /rbac/scopes; return the caller's grantable scope-value list.
 
     Raises ScopesUnavailable on any non-2xx response, transport error, or
     malformed body.
     """
     try:
-        resp = await client.get("/rbac/scopes")
+        resp = await client.get("/rbac/scopes", headers=headers)
     except httpx.RequestError as e:
         # Only narrow this to transport-level errors. The authenticated client
         # doesn't configure raise_for_status, so httpx.HTTPStatusError won't
@@ -201,6 +201,23 @@ async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set
         cached = await ctx.get_state(GRANTABLE_SCOPES_KEY)
         if cached is not None:
             return set(cached)
-        scopes = await fetch_grantable_scopes(client)
+        # Resolve Authorization header from scoped session token or bootstrap token
+        headers = {}
+        scoped_token = None
+        try:
+            scoped_token = await ctx.get_state("session_token")
+        except Exception:
+            pass
+        if scoped_token:
+            headers["Authorization"] = f"Bearer {scoped_token}"
+        else:
+            try:
+                from openfilter_mcp.server import _resolve_bootstrap_auth
+                bootstrap_token = _resolve_bootstrap_auth()
+                if bootstrap_token:
+                    headers["Authorization"] = f"Bearer {bootstrap_token}"
+            except Exception as e:
+                logger.warning("Failed to resolve bootstrap token for scopes fetch: %s", e)
+        scopes = await fetch_grantable_scopes(client, headers=headers if headers else None)
         await ctx.set_state(GRANTABLE_SCOPES_KEY, scopes)
         return set(scopes)
