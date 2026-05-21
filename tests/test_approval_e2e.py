@@ -106,6 +106,7 @@ def mcp_server() -> FastMCP:
     """
     with (
         patch("openfilter_mcp.server.get_auth_token", return_value="test-token"),
+        patch("openfilter_mcp.auth.get_auth_token", return_value="test-token"),
         patch("openfilter_mcp.server.get_openapi_spec", return_value=_MOCK_SPEC),
         patch("openfilter_mcp.server.get_effective_org_id", return_value="test-org"),
         patch("openfilter_mcp.server.get_latest_index_name", return_value="test-index"),
@@ -130,6 +131,7 @@ def _make_mcp_server_with_client(mock_client):
     """
     with (
         patch("openfilter_mcp.server.get_auth_token", return_value="test-token"),
+        patch("openfilter_mcp.auth.get_auth_token", return_value="test-token"),
         patch("openfilter_mcp.server.get_openapi_spec", return_value=_MOCK_SPEC),
         patch("openfilter_mcp.server.get_effective_org_id", return_value="test-org"),
         patch("openfilter_mcp.server.get_latest_index_name", return_value="test-index"),
