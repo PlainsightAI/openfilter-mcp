@@ -61,7 +61,7 @@ spec:
             - name: OAUTH_AS_URL
               value: {{ .Values.oauth.asUrl | quote }}
             - name: OAUTH_RESOURCE_URL
-              value: {{ .Values.oauth.resourceUrl | default (printf "https://%s" (required "ingress.host must be set when oauth.asUrl is set (or set oauth.resourceUrl explicitly)" .Values.ingress.host)) | quote }}
+              value: {{ if .Values.oauth.resourceUrl }}{{ .Values.oauth.resourceUrl | quote }}{{ else }}{{ printf "https://%s" (required "ingress.host must be set when oauth.asUrl is set (or set oauth.resourceUrl explicitly)" .Values.ingress.host) | quote }}{{ end }}
             {{- end }}
           ports:
             - name: http
