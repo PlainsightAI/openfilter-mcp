@@ -1,3 +1,4 @@
+{{- include "openfilter-mcp.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,7 +61,7 @@ spec:
             - name: OAUTH_AS_URL
               value: {{ .Values.oauth.asUrl | quote }}
             - name: OAUTH_RESOURCE_URL
-              value: {{ required "oauth.resourceUrl must be set (or ingress.host, which it defaults from) when oauth.asUrl is set" (.Values.oauth.resourceUrl | default (printf "https://%s" .Values.ingress.host)) | quote }}
+              value: {{ .Values.oauth.resourceUrl | default (printf "https://%s" (required "ingress.host must be set when oauth.asUrl is set (or set oauth.resourceUrl explicitly)" .Values.ingress.host)) | quote }}
             {{- end }}
           ports:
             - name: http

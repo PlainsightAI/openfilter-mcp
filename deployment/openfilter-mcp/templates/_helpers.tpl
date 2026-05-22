@@ -40,3 +40,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "openfilter-mcp.validate" -}}
+{{- if eq .Values.plainsightApiUrl "change.me" -}}
+{{- fail "plainsightApiUrl must be set in overrides/<env>.yaml" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled (eq .Values.ingress.host "change.me") -}}
+{{- fail "ingress.host must be set in overrides/<env>.yaml" -}}
+{{- end -}}
+{{- end -}}
