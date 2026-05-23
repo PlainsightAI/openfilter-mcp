@@ -34,3 +34,6 @@ build/
 cloudbuild.yaml
 .pre-commit-config.yaml
 .pytest_cache/
+
+# Helm chart — deployment manifests are never part of the image
+deployment/

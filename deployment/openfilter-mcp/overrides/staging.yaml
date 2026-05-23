@@ -1,0 +1,26 @@
+---
+# image.tag is rewritten in place on every merge to main by the
+# Deployments workflow's image-policy-applier step — the trailing
+# $imagepolicy annotation is the marker it keys off. Keep it quoted:
+# an all-digit placeholder would otherwise parse as the integer 0.
+image:
+  tag: "0000000000000000000000000000000000000000" # {"$imagepolicy": "staging:openfilter-mcp:tag"}
+
+replicaCount: 1
+
+plainsightApiUrl: "https://api.staging.plainsight.tech"
+
+oauth:
+  asUrl: "https://api.staging.plainsight.tech"
+  # resourceUrl defaults to https://<ingress.host> in the chart.
+
+ingress:
+  host: mcp.staging.plainsight.tech
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

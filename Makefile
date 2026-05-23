@@ -1,7 +1,14 @@
 DOCKERHUB_REPO := plainsightai/openfilter-mcp
+# GAR repo for the managed slim deployment image (built from Dockerfile.slim).
+# Consumed by PlainsightAI/gh-actions/publish-docker-image through the
+# build-image / publish-image / image-tag targets below.
+GAR_REPO       := us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter-mcp
 PLATFORMS      := linux/amd64,linux/arm64
-VERSION        := $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 SHA            := $(shell git rev-parse --short HEAD)
+# VERSION is the deploy image tag. CI exports it as the full commit SHA
+# (.github/workflows/deployments.yaml); locally it defaults to HEAD.
+VERSION        ?= $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+GAR_IMAGE_TAG  := $(GAR_REPO):$(VERSION)
 PYVER          := $(shell python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null || echo 0.0.0)
 V              ?= $(PYVER)
 GCP_PROJECT    := plainsightai-dev
@@ -11,6 +18,7 @@ DOCKER_CACHE   ?=
 
 .PHONY: help test build.slim build.full build.run.slim build.run.full \
         run.slim run.full \
+        image-tag build-image publish-image helm.lint \
         release.dev release.slim.dev release.prod \
         cloud.slim cloud.full \
         index index.extract smoke
@@ -57,6 +65,26 @@ run.full: ## Run published full image (with auth)
 	@docker rm -f openfilter-mcp 2>/dev/null || true
 	@test -f "$(PSCTL_TOKEN)" || { echo "Error: token file not found at $(PSCTL_TOKEN). Run 'psctl auth login' first."; exit 1; }
 	docker run --rm --name openfilter-mcp -p 3000:3000 -v "$(PSCTL_TOKEN):/root/.config/plainsight/token:ro" $(DOCKERHUB_REPO):latest
+
+# ─── Deploy (managed slim image → GAR) ────────────────────────────────────────
+# build-image / publish-image / image-tag are the contract with
+# PlainsightAI/gh-actions/publish-docker-image. The managed deployment is
+# slim-only, so they build Dockerfile.slim. VERSION is the commit SHA.
+
+image-tag: ## Print the GAR image ref the Deployments workflow publishes
+	@echo $(GAR_IMAGE_TAG)
+
+build-image: ## Build the slim deploy image for GAR
+	docker build $(DOCKER_CACHE) -f Dockerfile.slim -t $(GAR_IMAGE_TAG) .
+
+publish-image: ## Push the slim deploy image to GAR
+	docker push $(GAR_IMAGE_TAG)
+
+helm.lint: ## Lint the Helm chart against every environment override
+	helm lint deployment/openfilter-mcp
+	helm lint deployment/openfilter-mcp -f deployment/openfilter-mcp/overrides/development.yaml
+	helm lint deployment/openfilter-mcp -f deployment/openfilter-mcp/overrides/staging.yaml
+	helm lint deployment/openfilter-mcp -f deployment/openfilter-mcp/overrides/production.yaml
 
 # ─── Index ────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,12 @@
+# Patterns to ignore when building Helm packages.
+.git/
+.gitignore
+.helmignore
+*.tmproj
+*.bak
+*.swp
+*.orig
+.DS_Store
+# overrides/ are env value files consumed by ArgoCD as $values, not chart
+# templates — keep them out of any `helm package` tarball.
+overrides/
