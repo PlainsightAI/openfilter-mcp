@@ -1,22 +1,15 @@
 # deployments.yaml — Continuous deployment for the managed slim
 # openfilter-mcp. On every merge to main, build the slim image
-# (Dockerfile.slim) to GAR tagged with the commit SHA, then roll it
-# through development → staging → production via the shared
-# deploy-service reusable workflow. Each env step rewrites image.tag in
-# deployment/openfilter-mcp/overrides/<env>.yaml and commits it back;
+# (Dockerfile.slim) to GAR tagged with the commit SHA.
+#
 # ArgoCD (the openfilter-mcp ApplicationSet in PlainsightAI/gitops)
-# syncs from there.
-#
-# This is the managed-deployment path only. The tag-triggered Cloud
-# Build → Docker Hub release (auto-tag.yml + cloudbuild.yaml) still
-# publishes the public full/slim image artifacts and is unaffected.
-#
-# Mirrors plainsight-api's Deployments workflow and
-# openfilter-pipelines-controller#53.
+# utilizes the ArgoCD Image Updater in GKE to automatically reconcile and
+# roll out the new image, avoiding any automated "plainsight-bot" commits
+# to this repository.
 name: Deployments
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 concurrency:
@@ -28,18 +21,9 @@ on:
   push:
     branches:
       - main
-    # The deploy step commits image.tag bumps back into deployment/**;
-    # env-config changes are applied by apply-environments.yaml. Ignoring
-    # both here stops those commits retriggering a build + redeploy.
-    paths-ignore:
-      - 'deployment/**'
-      - '.github/environments/**'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled]
-    paths-ignore:
-      - 'deployment/**'
-      - '.github/environments/**'
 
 jobs:
   build:
@@ -52,24 +36,12 @@ jobs:
       - name: Publish Docker image to GAR
         uses: PlainsightAI/gh-actions-public/publish-docker-image@main
         env:
-          # Consumed by `make build-image` / `publish-image` / `image-tag`
-          # as the image tag — the same SHA the deploy step pins.
           VERSION: ${{ github.sha }}
         with:
           environment: production
 
-  deploy:
-    needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    uses: PlainsightAI/gh-actions-public/.github/workflows/deploy-service.yaml@main
-    with:
-      service-name: openfilter-mcp
-      manifests-path: deployment
-    secrets: inherit
-
   # Build a PR-tagged image when a PR carries the `preview` label, so a
-  # preview ApplicationSet in gitops can pull it. No-op until that
-  # ApplicationSet exists; harmless to keep for parity with the pattern.
+  # preview ApplicationSet in gitops can pull it.
   preview:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'preview')
