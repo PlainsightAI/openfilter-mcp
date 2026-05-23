@@ -203,10 +203,8 @@ async def get_or_fetch_grantable(ctx: Context, client: httpx.AsyncClient) -> set
         cached = await ctx.get_state(GRANTABLE_SCOPES_KEY)
         if cached is not None:
             return set(cached)
-        headers = {}
         bootstrap_token = _resolve_bootstrap_auth()
-        if bootstrap_token:
-            headers["Authorization"] = f"Bearer {bootstrap_token}"
+        headers = {"Authorization": f"Bearer {bootstrap_token}"} if bootstrap_token else None
         scopes = await fetch_grantable_scopes(client, headers=headers)
         await ctx.set_state(GRANTABLE_SCOPES_KEY, scopes)
         return set(scopes)

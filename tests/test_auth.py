@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -1480,3 +1480,99 @@ class TestGetEffectiveOrgId:
 
         org_id = get_effective_org_id(plainsight_no_org_jwt, target_org_id="target-org")
         assert org_id == "target-org"
+
+
+class TestResolveBootstrapAuth:
+    """Tests for `_resolve_bootstrap_auth` — the credential precedence
+    used by /api-tokens when bootstrapping the elicitation flow.
+
+    The order (psctl/env > FastMCP-context OAuth bearer) is a security
+    invariant: in mixed deployments the long-lived primary credential
+    must take precedence so that a request with a narrow OAuth bearer
+    can't be elevated to using a broad psctl token. (And in OAuth-only
+    deployments, the OAuth bearer is the only available credential.)
+    """
+
+    def test_returns_psctl_env_token_when_present(self):
+        """Primary credential takes precedence over the OAuth fallback."""
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
+
+        with patch(
+            "openfilter_mcp.auth.get_auth_token", return_value="psctl-token"
+        ):
+            # Even if the OAuth dependency is importable, it must not be consulted.
+            with patch(
+                "fastmcp.server.dependencies.get_access_token"
+            ) as mock_get_access:
+                result = _resolve_bootstrap_auth()
+
+        assert result == "psctl-token"
+        mock_get_access.assert_not_called()
+
+    def test_falls_through_to_oauth_bearer_when_no_psctl(self):
+        """OAuth-only mode: psctl is empty → consult fastmcp request bearer."""
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
+
+        mock_access = MagicMock()
+        mock_access.token = "oauth-bearer-xyz"
+
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=mock_access,
+            ):
+                result = _resolve_bootstrap_auth()
+
+        assert result == "oauth-bearer-xyz"
+
+    def test_returns_none_when_oauth_dependency_missing(self):
+        """Older fastmcp without `dependencies` module: psctl-only mode."""
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fastmcp.server.dependencies":
+                raise ImportError("no such module")
+            return real_import(name, *args, **kwargs)
+
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
+            with patch.object(builtins, "__import__", side_effect=fake_import):
+                result = _resolve_bootstrap_auth()
+
+        assert result is None
+
+    def test_returns_none_when_oauth_context_missing(self):
+        """Importable but no request context active → return None gracefully."""
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
+
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=None,
+            ):
+                result = _resolve_bootstrap_auth()
+
+        assert result is None
+
+    def test_logs_debug_on_unexpected_failure(self, caplog):
+        """Unexpected runtime failures in get_access_token() get logged at
+        DEBUG so OAuth-mode operators can diagnose silent breakage."""
+        import logging as _logging
+        from openfilter_mcp.auth import _resolve_bootstrap_auth
+
+        with patch("openfilter_mcp.auth.get_auth_token", return_value=None):
+            with patch(
+                "fastmcp.server.dependencies.get_access_token",
+                side_effect=RuntimeError("missing request context"),
+            ):
+                with caplog.at_level(_logging.DEBUG, logger="openfilter_mcp.auth"):
+                    result = _resolve_bootstrap_auth()
+
+        assert result is None
+        assert any(
+            "get_access_token() failed during bootstrap" in rec.message
+            for rec in caplog.records
+        )
+

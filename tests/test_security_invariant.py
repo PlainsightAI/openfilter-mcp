@@ -2,7 +2,7 @@
 
 The PR that introduced OAuth-mode bootstrap (DT-133) carved out a
 single sanctioned consumer of the request-bound OAuth Bearer for
-outbound auth: `openfilter_mcp.server._resolve_bootstrap_auth`. Every
+outbound auth: `openfilter_mcp.auth._resolve_bootstrap_auth`. Every
 other code path — entity ops in particular — must derive outbound
 Authorization from the session-scoped token (set by user-approved
 `request_scoped_token`) or the static psctl/OPENFILTER_TOKEN.
