@@ -9,8 +9,9 @@
 # and staging deploy first and unattended, so a bad image is visible
 # in two lower environments before anyone is asked to approve prod.
 wait_timer: 0
-# The actor who triggered the deploy cannot approve their own prod run.
-prevent_self_review: true
+# Allow the actor who triggered the deploy to approve their own prod run,
+# promoting operational ownership of the release (matching plainsight-api).
+prevent_self_review: false
 reviewers:
   # Machine Learning team (slug: machine-learning, id: 10497208). The
   # reviewers API takes the numeric team id, not the slug — re-resolve with:
