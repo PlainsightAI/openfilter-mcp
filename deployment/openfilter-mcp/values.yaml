@@ -7,10 +7,9 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  # GAR repo published by the Deployments workflow
-  # (.github/workflows/deployments.yaml → PlainsightAI/gh-actions/publish-docker-image).
-  # The managed deployment is slim-only — this is built from Dockerfile.slim.
-  repository: us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter-mcp
+  # Default repository is the public Docker Hub repository.
+  # For our managed environments, this is overridden to Google Artifact Registry (GAR) in the overrides files.
+  repository: plainsightai/openfilter-mcp
   # tag is owned per-environment by overrides/<env>.yaml and bumped on
   # every merge to main by the Deployments workflow's image-policy-applier
   # step (keyed off the Flux $imagepolicy annotation there). The default
