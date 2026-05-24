@@ -1015,7 +1015,7 @@ def create_mcp_server() -> FastMCP:
                         "Scopes": scope_list,
                         "Expires": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
                     },
-                    base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
+                    base_url=os.getenv('MCP_BASE_URL') or os.getenv('OAUTH_RESOURCE_URL') or f"http://localhost:{os.getenv('PORT', '3000')}",
                 )
 
                 # One pending approval per session — cancel any previous one

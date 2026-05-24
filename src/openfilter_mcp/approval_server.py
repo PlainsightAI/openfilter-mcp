@@ -448,7 +448,7 @@ class ApprovalRegistry:
 
         approve_path = f"/approve/{session_id}"
         action_url = f"{approve_path}/respond"
-        page_url = f"{base_url}{approve_path}" if base_url else approve_path
+        page_url = f"{base_url.rstrip('/')}{approve_path}" if base_url else approve_path
 
         approval_html = _render_approval_page(title, message, details, nonce, action_url)
 
