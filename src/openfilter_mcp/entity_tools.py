@@ -919,7 +919,7 @@ class EntityToolsHandler:
         request_scoped_token) → static psctl/OPENFILTER_TOKEN → explicit
         PermissionError. The request OAuth bearer is intentionally NOT in
         this chain; consuming it here would bypass the elicitation gate.
-        The single sanctioned exception is `server._resolve_bootstrap_auth`
+        The single sanctioned exception is `auth._resolve_bootstrap_auth`
         for the /api-tokens POST that creates the session-scoped token.
         That invariant is enforced by `tests/test_security_invariant.py`,
         which AST-scans this file for the forbidden patterns.

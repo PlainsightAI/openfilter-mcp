@@ -233,6 +233,25 @@ class TestFetchGrantableScopes:
             result = await fetch_grantable_scopes(client)
         assert result == ["filterpipeline:read", "project:*"]
 
+    async def test_forwards_custom_headers(self, httpx_mock):
+        httpx_mock.add_response(
+            url=f"{_BASE_URL}/rbac/scopes",
+            json={
+                "scopes": [
+                    {"value": "filterpipeline:read", "domain": "filterpipeline", "action": "read"},
+                ],
+            },
+        )
+        custom_headers = {"X-Test-Header": "test-value", "Authorization": "Bearer test-token"}
+        async with httpx.AsyncClient(base_url=_BASE_URL) as client:
+            result = await fetch_grantable_scopes(client, headers=custom_headers)
+        assert result == ["filterpipeline:read"]
+        
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].headers.get("x-test-header") == "test-value"
+        assert requests[0].headers.get("authorization") == "Bearer test-token"
+
     async def test_401_raises_with_status(self, httpx_mock):
         httpx_mock.add_response(
             url=f"{_BASE_URL}/rbac/scopes",
@@ -330,6 +349,42 @@ class TestGetOrFetchGrantable:
         # per-session lock is also written on cold sessions, so we check
         # for this specific call rather than asserting a single write.)
         ctx.set_state.assert_any_await(GRANTABLE_SCOPES_KEY, ["project:read"])
+
+    async def test_get_or_fetch_grantable_forwards_bootstrap_token(self, httpx_mock):
+        from unittest.mock import patch
+        ctx = MagicMock()
+        ctx.get_state = AsyncMock(return_value=None)
+        ctx.set_state = AsyncMock()
+        httpx_mock.add_response(
+            url=f"{_BASE_URL}/rbac/scopes",
+            json={"scopes": [{"value": "project:read", "domain": "project", "action": "read"}]},
+        )
+        with patch("openfilter_mcp.scopes._resolve_bootstrap_auth", return_value="test-bootstrap-token"):
+            async with httpx.AsyncClient(base_url=_BASE_URL) as client:
+                result = await get_or_fetch_grantable(ctx, client)
+        
+        assert result == {"project:read"}
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].headers.get("authorization") == "Bearer test-bootstrap-token"
+
+    async def test_get_or_fetch_grantable_no_bootstrap_token(self, httpx_mock):
+        from unittest.mock import patch
+        ctx = MagicMock()
+        ctx.get_state = AsyncMock(return_value=None)
+        ctx.set_state = AsyncMock()
+        httpx_mock.add_response(
+            url=f"{_BASE_URL}/rbac/scopes",
+            json={"scopes": [{"value": "project:read", "domain": "project", "action": "read"}]},
+        )
+        with patch("openfilter_mcp.scopes._resolve_bootstrap_auth", return_value=None):
+            async with httpx.AsyncClient(base_url=_BASE_URL) as client:
+                result = await get_or_fetch_grantable(ctx, client)
+        
+        assert result == {"project:read"}
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert "authorization" not in requests[0].headers
 
     async def test_uses_cache_skips_fetch(self, httpx_mock):
         ctx = MagicMock()
