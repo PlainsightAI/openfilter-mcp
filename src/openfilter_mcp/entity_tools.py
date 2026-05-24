@@ -766,7 +766,7 @@ class EntityToolsHandler:
                         message=f"Your scoped token '{token_name}' has expired. Re-create with the same scopes?",
                         details={"Token name": token_name, "Scopes": scopes},
                         timeout_seconds=60,
-                        base_url=os.getenv('MCP_BASE_URL', f"http://localhost:{os.getenv('PORT', '3000')}"),
+                        base_url=os.getenv('MCP_BASE_URL') or os.getenv('OAUTH_RESOURCE_URL') or f"http://localhost:{os.getenv('PORT', '3000')}",
                     )
                 else:
                     logger.warning(
