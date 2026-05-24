@@ -551,8 +551,6 @@ def _resolve_bootstrap_auth() -> str | None:
         return None
     try:
         access = get_access_token()
-        if access is not None:
-            return access.token
     except Exception as exc:
         # get_access_token() reads from a contextvar populated by FastMCP's
         # auth middleware. If the middleware isn't installed, the var is
@@ -560,6 +558,11 @@ def _resolve_bootstrap_auth() -> str | None:
         # so OAuth-only deploys can diagnose silent bootstrap failures.
         logger.debug("get_access_token() failed during bootstrap: %s", exc)
         return None
+
+    if access is not None:
+        token = access.token
+        register_sensitive(token, label="oauth-bearer")
+        return token
     return None
 
 
