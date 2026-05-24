@@ -4,7 +4,7 @@
 # an all-digit placeholder would otherwise parse as the integer 0.
 image:
   repository: us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter-mcp
-  tag: "9bd387d57770649c0fedc9a11998a8d83034911b" # {"$imagepolicy": "development:openfilter-mcp:tag"}
+  tag: "30aa146194ee85a396c54db1d56643e60951eaa0" # {"$imagepolicy": "development:openfilter-mcp:tag"}
 replicaCount: 1
 plainsightApiUrl: "https://api.dev.plainsight.tech"
 oauth:
