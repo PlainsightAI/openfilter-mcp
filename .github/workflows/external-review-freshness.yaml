@@ -1,0 +1,41 @@
+name: External review freshness
+
+# Dismiss APPROVED reviews when a PR authored by an untrusted contributor
+# receives new commits. Trust is keyed on the PR *author*'s repo collaborator
+# permission (admin/maintain/write → trusted; everyone else → dismiss every
+# approval on the PR, including approvals granted by maintainers). Forces
+# re-review of any new code from someone the repo doesn't already trust.
+#
+# Complements (does not replace) GitHub's native
+# `dismiss_stale_reviews_on_push` rule. The native rule dismisses approvals
+# on *every* push, including a maintainer's own fixup to their own PR; this
+# action only fires when the PR author is untrusted, so trusted-maintainer
+# self-pushes don't invalidate fresh approvals.
+#
+# Must run on pull_request_target (not pull_request) so the job has
+# base-repo permissions to dismiss reviews on fork PRs.
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+# Per-PR concurrency: a force-push or rapid fixup-push fires `synchronize`
+# twice in quick succession, queuing two dismissal runs against the same
+# review set. Cancel the older run so only the latest push's freshness check
+# survives — avoids racy double-dismiss attempts.
+concurrency:
+  group: external-review-freshness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dismiss:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: PlainsightAI/gh-actions-public/external-review-freshness@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: "false"
