@@ -435,26 +435,22 @@ def _build_oauth_provider() -> Any:
         f"http://localhost:{os.getenv('PORT', '3000')}",
     ).rstrip("/")
 
-    # Use syntax-aware URL parsing to construct allowed issuers with/without trailing slash
-    from urllib.parse import urlparse, urlunparse
-    parsed_as = urlparse(as_url)
-    if parsed_as.scheme and parsed_as.netloc:
-        path_no_slash = parsed_as.path.rstrip("/")
-        issuer_no_slash = urlunparse(parsed_as._replace(path=path_no_slash))
-        issuer_with_slash = urlunparse(parsed_as._replace(path=path_no_slash + "/"))
-        allowed_issuers = [issuer_no_slash, issuer_with_slash]
-    else:
-        allowed_issuers = [as_url, f"{as_url}/"]
+    # Accept both trailing-slash and non-trailing-slash variants of the AS
+    # URL — the authorization server may issue tokens with either form in
+    # the `iss` claim depending on configuration.
+    allowed_issuers = [as_url, f"{as_url}/"]
 
     # Default audience set: the spec'd RFC 8707 binding (resource_url +
     # "/mcp", which is what the protected-resource doc advertises and
-    # what RemoteAuthProvider broadcasts as the resource) plus the AS
-    # URL for iss-fallback compatibility. Either passes verification.
+    # what RemoteAuthProvider broadcasts as the resource) plus both
+    # slash variants of the AS URL for iss-fallback compatibility (when
+    # a client doesn't pass `resource=` at /authorize, `aud` mirrors
+    # `iss`, which may carry a trailing slash).
     audience_env = os.getenv("OAUTH_AUDIENCE")
     if audience_env:
         audience: str | list[str] = [a.strip() for a in audience_env.split(",") if a.strip()]
     else:
-        audience = [f"{resource_url}/mcp", as_url]
+        audience = [f"{resource_url}/mcp", as_url, f"{as_url}/"]
 
     verifier = JWTVerifier(
         jwks_uri=f"{as_url}/.well-known/jwks.json",

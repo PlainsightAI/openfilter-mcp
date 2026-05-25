@@ -409,6 +409,7 @@ class TestBuildOAuthProvider:
         assert verifier_kwargs["audience"] == [
             "https://mcp.example.com/mcp",
             "https://api.example.com",
+            "https://api.example.com/",
         ]
         assert verifier_kwargs["issuer"] == ["https://api.example.com", "https://api.example.com/"]
         assert verifier_kwargs["algorithm"] == "ES256"
