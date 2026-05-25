@@ -1,0 +1,48 @@
+# PR backstop: any substantive change to this repo (package source, build
+# infra, runtime config) must come with a RELEASE.md entry. `ignore-paths`
+# scopes the gate by *exclusion* — anything not listed below counts as
+# substantive, so a new top-level source dir gets caught by default instead
+# of silently slipping through an outdated `source-paths` allowlist.
+#
+# The composite also validates RELEASE.md format via changelog-parser-action
+# and (when a VERSION file is present) checks version consistency + that
+# VERSION is not behind base. This repo carries its version in pyproject.toml
+# rather than a VERSION file, so those two sub-checks no-op gracefully.
+#
+# Dependabot PRs are skipped inside the action.
+name: Check Release Log
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-release-log:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run release log check
+        uses: PlainsightAI/gh-actions-public/check-release-log@main
+        with:
+          # Exclusion list, not allowlist — see header comment for rationale.
+          # `deployment/**` and `.github/**` (which covers the auto-bumped
+          # `.github/environments/**`) are touched by the deploy workflow
+          # committing image.tag back to main; those commits don't go through
+          # PRs, but excluding the paths keeps the gate honest if a human ever
+          # edits them directly. `docs/**`, `tests/**`, and `**/*.md` are
+          # non-shipping — note this means pure-test PRs won't require a
+          # changelog entry; add one manually for notable QA improvements.
+          ignore-paths: |
+            .github/**
+            deployment/**
+            docs/**
+            tests/**
+            **/*.md
