@@ -22,7 +22,6 @@ permissions:
 
 jobs:
   check-release-log:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -34,11 +33,13 @@ jobs:
         uses: PlainsightAI/gh-actions-public/check-release-log@main
         with:
           # Exclusion list, not allowlist — see header comment for rationale.
-          # `deployment/**` and `.github/environments/**` are auto-bumped by
-          # the deploy workflow committing image.tag back to main; those
-          # commits don't go through PRs, but excluding the paths keeps the
-          # gate honest if a human ever edits them directly. `docs/**`,
-          # `tests/**`, `.github/**`, and `**/*.md` are non-shipping.
+          # `deployment/**` and `.github/**` (which covers the auto-bumped
+          # `.github/environments/**`) are touched by the deploy workflow
+          # committing image.tag back to main; those commits don't go through
+          # PRs, but excluding the paths keeps the gate honest if a human ever
+          # edits them directly. `docs/**`, `tests/**`, and `**/*.md` are
+          # non-shipping — note this means pure-test PRs won't require a
+          # changelog entry; add one manually for notable QA improvements.
           ignore-paths: |
             .github/**
             deployment/**

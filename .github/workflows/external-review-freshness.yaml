@@ -14,6 +14,11 @@ name: External review freshness
 #
 # Must run on pull_request_target (not pull_request) so the job has
 # base-repo permissions to dismiss reviews on fork PRs.
+#
+# DO NOT add `actions/checkout` (or any step that materializes PR head code)
+# to this workflow. `pull_request_target` runs with write-scoped base-repo
+# secrets; checking out untrusted fork code under that context is the classic
+# pwn vector. This workflow only needs PR metadata via the GitHub API.
 
 on:
   pull_request_target:
