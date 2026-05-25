@@ -410,7 +410,7 @@ class TestBuildOAuthProvider:
             "https://mcp.example.com/mcp",
             "https://api.example.com",
         ]
-        assert verifier_kwargs["issuer"] == "https://api.example.com"
+        assert verifier_kwargs["issuer"] == ["https://api.example.com", "https://api.example.com/"]
         assert verifier_kwargs["algorithm"] == "ES256"
         assert verifier_kwargs["jwks_uri"] == "https://api.example.com/.well-known/jwks.json"
 
@@ -461,7 +461,7 @@ class TestBuildOAuthProvider:
 
         verifier_kwargs = mock_verifier_cls.call_args.kwargs
         assert verifier_kwargs["jwks_uri"] == "https://api.example.com/.well-known/jwks.json"
-        assert verifier_kwargs["issuer"] == "https://api.example.com"
+        assert verifier_kwargs["issuer"] == ["https://api.example.com", "https://api.example.com/"]
         # Default audience uses the cleaned values.
         assert "https://mcp.example.com/mcp" in verifier_kwargs["audience"]
         provider_kwargs = mock_provider_cls.call_args.kwargs
