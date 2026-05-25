@@ -19,6 +19,11 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
   by untrusted contributors whenever they push new commits, so any new code
   from a non-collaborator forces re-review.
 
+### Fixed
+
+- Auth now accepts both trailing-slash and non-trailing-slash token issuers
+  via syntax-aware URL parsing, and tolerates trailing-slash audience values.
+
 ## v0.2.2
 
 - Initial tracked release. Prior history is captured in git only.
