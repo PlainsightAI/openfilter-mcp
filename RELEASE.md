@@ -8,7 +8,7 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 `pyproject.toml` in the same PR (the `auto-tag` workflow keys off
 `pyproject.toml` changes on main to push the tag).
 
-## [Unreleased]
+## v0.2.3
 
 ### Added
 
