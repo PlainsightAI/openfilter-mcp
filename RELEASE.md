@@ -8,7 +8,7 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 `pyproject.toml` in the same PR (the `auto-tag` workflow keys off
 `pyproject.toml` changes on main to push the tag).
 
-## [Unreleased]
+## v0.2.3
 
 ### Added
 
@@ -18,6 +18,11 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 - `external-review-freshness` workflow: dismisses approvals on PRs authored
   by untrusted contributors whenever they push new commits, so any new code
   from a non-collaborator forces re-review.
+
+### Fixed
+
+- Auth now accepts both trailing-slash and non-trailing-slash token issuers
+  via syntax-aware URL parsing, and tolerates trailing-slash audience values.
 
 ## v0.2.2
 
