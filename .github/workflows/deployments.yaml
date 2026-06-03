@@ -19,16 +19,17 @@ permissions:
 
 concurrency:
   group: deployments
-  cancel-in-progress: false   # serialize, don't drop a queued deploy
+  cancel-in-progress: true   # build-only now (no deploy step); a build superseded by a newer SHA is safe to drop
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-    # The deploy step commits image.tag bumps back into deployment/**;
-    # env-config changes are applied by apply-environments.yaml. Ignoring
-    # both here stops those commits retriggering a build + redeploy.
+    # ArgoCD Image Updater writes image bumps into the gitops repo, not into
+    # deployment/** here; env-config changes are applied by
+    # apply-environments.yaml. Ignoring both still avoids a build retrigger on
+    # any manual edits to these paths.
     paths-ignore:
       - 'deployment/**'
       - '.github/environments/**'
@@ -51,7 +52,8 @@ jobs:
         uses: PlainsightAI/gh-actions-public/publish-docker-image@main
         env:
           # Consumed by `make build-image` / `publish-image` / `image-tag`
-          # as the image tag — the same SHA the deploy step pins.
+          # as the image tag — the SHA tag ArgoCD Image Updater detects in
+          # GAR and writes into the gitops repo.
           VERSION: ${{ github.sha }}
         with:
           environment: production
