@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
@@ -195,6 +196,57 @@ def get_entity_spec() -> dict[str, Any] | None:
             "entity-spec endpoint unreachable, falling back to OpenAPI parsing: %s", e
         )
         return None
+
+
+# Startup openapi-fetch retry knobs. The openapi fetch is the single gate
+# for entity-tool registration, and it runs ONCE at startup with no
+# in-process retry. A transient failure here — most commonly a DNS
+# cold-start race where the pod comes up before kube-dns is reachable
+# ([Errno -3] Temporary failure in name resolution) — would otherwise
+# permanently degrade the server to just the token-scoping tools until a
+# manual restart. Retrying with capped exponential backoff absorbs that
+# race. Overridable via env for tests / unusual deployments.
+_OPENAPI_FETCH_ATTEMPTS = int(os.getenv("OPF_MCP_OPENAPI_FETCH_ATTEMPTS", "5"))
+_OPENAPI_FETCH_BASE_DELAY = float(os.getenv("OPF_MCP_OPENAPI_FETCH_BASE_DELAY", "1.0"))
+_OPENAPI_FETCH_MAX_DELAY = float(os.getenv("OPF_MCP_OPENAPI_FETCH_MAX_DELAY", "30.0"))
+
+
+def fetch_openapi_spec_with_retry(
+    attempts: int | None = None,
+    base_delay: float | None = None,
+    max_delay: float | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the OpenAPI spec, retrying transient failures with capped
+    exponential backoff.
+
+    Returns the sanitized spec on success, or None if every attempt
+    failed. Never raises — a None return lets the caller decide whether
+    to fail-fast (REQUIRE_AUTH) or degrade.
+    """
+    attempts = attempts if attempts is not None else _OPENAPI_FETCH_ATTEMPTS
+    base_delay = base_delay if base_delay is not None else _OPENAPI_FETCH_BASE_DELAY
+    max_delay = max_delay if max_delay is not None else _OPENAPI_FETCH_MAX_DELAY
+
+    delay = base_delay
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return get_openapi_spec()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts:
+                logger.warning(
+                    "openapi.json fetch attempt %d/%d failed against %s: %s — retrying in %.1fs",
+                    attempt, attempts, PLAINSIGHT_API_URL, exc, delay,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)
+    logger.error(
+        "openapi.json fetch failed after %d attempt(s) against %s — entity tools "
+        "will not register: %s",
+        attempts, PLAINSIGHT_API_URL, last_exc,
+    )
+    return None
 
 
 class SchemaStrippingTransport(httpx.AsyncBaseTransport):
@@ -525,14 +577,11 @@ def create_mcp_server() -> FastMCP:
         else "OAuth-only (per-request bearer)" if oauth_only_mode else "none"
     )
 
-    try:
-        openapi_spec = get_openapi_spec()
-    except Exception as exc:
-        logger.warning(
-            "openapi.json fetch failed at startup against %s — entity tools will not register: %s",
-            PLAINSIGHT_API_URL,
-            exc,
-        )
+    # Retry the openapi fetch with backoff so a startup DNS / API blip
+    # doesn't silently freeze the catalog at just the token-scoping tools
+    # (see fetch_openapi_spec_with_retry). Returns None only after every
+    # attempt failed.
+    openapi_spec = fetch_openapi_spec_with_retry()
 
     # Construct an http client even when there's no startup token — it's
     # used by entity tool handlers per-request with session-scoped
@@ -563,6 +612,22 @@ def create_mcp_server() -> FastMCP:
             "mode by setting OAUTH_AS_URL."
         )
 
+    # Fail-fast when the managed (slim) deployment can't reach the openapi
+    # spec. With ENABLE_CODE_SEARCH=false, an empty spec means the server
+    # would register ONLY token-scoping tools — a useless catalog that
+    # still passes a TCP readiness probe and serves quietly degraded
+    # forever (the exact incident this guard prevents). A crashloop is
+    # visible and recovers automatically once DNS / the API are back;
+    # silent degradation is not. REQUIRE_AUTH is the managed-mode signal.
+    if require_auth and openapi_spec is None:
+        raise SystemExit(
+            f"REQUIRE_AUTH is set but the OpenAPI spec at {PLAINSIGHT_API_URL} "
+            f"could not be fetched after {_OPENAPI_FETCH_ATTEMPTS} attempt(s), so "
+            "no entity tools would register. Refusing to start a degraded server.\n"
+            "This is usually a transient DNS/API failure at pod startup — the "
+            "process will exit and the orchestrator should restart it."
+        )
+
     if not has_auth:
         if oauth_only_mode:
             logger.info(
@@ -587,6 +652,33 @@ def create_mcp_server() -> FastMCP:
         entity_spec = get_entity_spec()
         registry, entity_handler = register_entity_tools(
             mcp, client, openapi_spec, entity_spec=entity_spec, approval_registry=approval_registry
+        )
+
+    # =========================================================================
+    # Health endpoint — readiness gated on the catalog actually being usable.
+    #
+    # TCP probes only confirm the port is bound; they cannot tell a fully-
+    # registered server from one that came up with zero entity tools after
+    # a startup openapi-fetch failure. This /health route returns 503 until
+    # entity tools are registered, so a degraded pod stays OUT of rotation
+    # instead of silently serving a crippled catalog. Registered as an
+    # unauthenticated custom route (same path class as /approve), so the
+    # kubelet can reach it without a bearer token.
+    # =========================================================================
+
+    entity_tools_registered = entity_handler is not None
+
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(request):  # noqa: ANN001 — starlette Request
+        from starlette.responses import JSONResponse
+
+        return JSONResponse(
+            {
+                "status": "ok" if entity_tools_registered else "degraded",
+                "entity_tools_registered": entity_tools_registered,
+                "code_search": os.getenv("ENABLE_CODE_SEARCH", "true").lower() == "true",
+            },
+            status_code=200 if entity_tools_registered else 503,
         )
 
     # =========================================================================
