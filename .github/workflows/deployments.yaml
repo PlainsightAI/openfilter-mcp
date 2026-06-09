@@ -9,8 +9,6 @@
 # The tag-triggered Cloud Build → Docker Hub release (auto-tag.yml +
 # cloudbuild.yaml) still publishes the public full/slim image artifacts
 # and is unaffected.
-#
-# Mirrors plainsight-api's Deployments workflow.
 name: Deployments
 
 permissions:
