@@ -4,33 +4,60 @@ on:
   push:
     tags: ["v*.*.*"]
 
+# Serialize per-tag so a re-run (or delete+repush) can't race a prior publish.
+# cancel-in-progress: false — never abort an in-flight push to the public registry.
+concurrency:
+  group: publish-chart-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   DOCKERHUB_USERNAME: plainsightai
 
 jobs:
   publish-chart:
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v6
 
+      # The tag glob (v*.*.*) is laxer than semver: it matches v1.2.3-rc1,
+      # v1.2.3+build.4, vDEV.test.x, four-part v0.1.0.1, and shell-metachar
+      # tags. Validate strictly before the version is ever interpolated, and
+      # publish stable releases only (no pre-release / build metadata).
       - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          ref="$GITHUB_REF_NAME"
+          if [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$ref' is not a stable semver tag (vMAJOR.MINOR.PATCH); refusing to publish." >&2
+            exit 1
+          fi
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
 
       - uses: azure/setup-helm@v5
 
+      - name: Lint and render chart
+        run: |
+          helm lint deployment/openfilter-mcp
+          helm template deployment/openfilter-mcp >/dev/null
+
       - name: Log in to DockerHub (Helm OCI)
-        run: echo "${{ secrets.DOCKERHUB_ACCESS_TOKEN }}" | helm registry login registry-1.docker.io -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+        run: echo "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Package Helm chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           helm package deployment/openfilter-mcp \
-            --version ${{ steps.version.outputs.version }} \
-            --app-version ${{ steps.version.outputs.version }}
+            --version "$VERSION" \
+            --app-version "$VERSION" \
+            --destination .
 
       - name: Push Helm chart to DockerHub OCI
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          helm push openfilter-mcp-${{ steps.version.outputs.version }}.tgz \
+          helm push "openfilter-mcp-${VERSION}.tgz" \
             oci://registry-1.docker.io/plainsightai
