@@ -17,17 +17,26 @@ permissions:
 
 concurrency:
   group: deployments
-  cancel-in-progress: true   # build-only now (no deploy step); a build superseded by a newer SHA is safe to drop
+  # Build-only now, but do NOT cancel superseded builds: ArgoCD Image Updater
+  # selects the newest GAR image tagged with a commit SHA, so every merged SHA
+  # must have its image built. Dropping an intermediate build would leave that
+  # SHA with no image — invisible to Image Updater and unavailable for a
+  # rollback/pin to a non-HEAD SHA.
+  cancel-in-progress: false
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-    # ArgoCD Image Updater writes image bumps into the gitops repo, not into
-    # deployment/** here; env-config changes are applied by
-    # apply-environments.yaml. Ignoring both still avoids a build retrigger on
-    # any manual edits to these paths.
+    # Ignore chart/env edits here on purpose. This workflow builds only the
+    # app image (Dockerfile.slim) → GAR; it does not render or ship the chart.
+    # ArgoCD sources the chart live from this repo's deployment/openfilter-mcp
+    # at targetRevision HEAD (selfHeal), so a templates/values/Chart.yaml edit
+    # auto-deploys on merge WITHOUT a build. Triggering a build on a chart-only
+    # change would only produce a new-SHA image with identical code, which
+    # Image Updater (newest-build) would then redeploy — pure churn, not a
+    # delta deploy. .github/environments/** is applied by apply-environments.yaml.
     paths-ignore:
       - 'deployment/**'
       - '.github/environments/**'
