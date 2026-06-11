@@ -3,9 +3,11 @@ name: openfilter-mcp
 description: Managed slim openfilter-mcp deployment (platform tools only — no code-search, no PVC, no GPU)
 type: application
 version: 0.1.0
-# image.tag is the source of truth and is bumped per-environment by the
-# Deployments workflow (.github/workflows/deployments.yaml) via the Flux
-# $imagepolicy annotations in overrides/<env>.yaml; appVersion is pinned
-# so it doesn't lag behind and ship a misleading
-# app.kubernetes.io/version label.
+# For the managed deployment, image.tag is the source of truth and is bumped
+# per-environment by gitops's ArgoCD Image Updater, which writes
+# applications/openfilter-mcp/image-tag.yaml; appVersion is pinned so it
+# doesn't lag behind and ship a misleading app.kubernetes.io/version label.
+# This chart is also published to oci://registry-1.docker.io/plainsightai on
+# every v*.*.* tag (.github/workflows/publish-chart.yaml) so external users can
+# `helm install`; at package time --version/--app-version are set from the tag.
 appVersion: "0.0.0"
