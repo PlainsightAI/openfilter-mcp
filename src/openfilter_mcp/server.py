@@ -227,9 +227,12 @@ def fetch_openapi_spec_with_retry(
     base_delay = base_delay if base_delay is not None else _OPENAPI_FETCH_BASE_DELAY
     max_delay = max_delay if max_delay is not None else _OPENAPI_FETCH_MAX_DELAY
 
+    # Always make at least one attempt; clamp so logs match the loop.
+    attempts = max(1, attempts)
+
     delay = base_delay
     last_exc: Exception | None = None
-    for attempt in range(1, max(1, attempts) + 1):
+    for attempt in range(1, attempts + 1):
         try:
             return get_openapi_spec()
         except Exception as exc:
@@ -614,11 +617,13 @@ def create_mcp_server() -> FastMCP:
 
     # Fail-fast when the managed (slim) deployment can't reach the openapi
     # spec. With ENABLE_CODE_SEARCH=false, an empty spec means the server
-    # would register ONLY token-scoping tools — a useless catalog that
-    # still passes a TCP readiness probe and serves quietly degraded
-    # forever (the exact incident this guard prevents). A crashloop is
-    # visible and recovers automatically once DNS / the API are back;
-    # silent degradation is not. REQUIRE_AUTH is the managed-mode signal.
+    # would register ONLY token-scoping tools — a useless catalog serving
+    # quietly degraded forever (the exact incident this guard prevents).
+    # This is defense-in-depth alongside the /health probe below: /health
+    # keeps a degraded pod out of rotation, but crashing outright is
+    # strictly better in managed mode — it's visible and recovers
+    # automatically once DNS / the API are back, where a pod parked at 503
+    # would sit unready indefinitely. REQUIRE_AUTH is the managed-mode signal.
     if require_auth and openapi_spec is None:
         raise SystemExit(
             f"REQUIRE_AUTH is set but the OpenAPI spec at {PLAINSIGHT_API_URL} "
@@ -664,9 +669,17 @@ def create_mcp_server() -> FastMCP:
     # instead of silently serving a crippled catalog. Registered as an
     # unauthenticated custom route (same path class as /approve), so the
     # kubelet can reach it without a bearer token.
+    #
+    # "Registered" means the registry actually holds at least one entity —
+    # not merely that register_entity_tools() handed back a handler. An
+    # empty spec ({"paths": {}}) still yields a non-None handler over an
+    # empty registry, which is the same crippled-catalog state this probe
+    # exists to catch, so gate on registry.entities being non-empty.
     # =========================================================================
 
-    entity_tools_registered = entity_handler is not None
+    entity_tools_registered = entity_handler is not None and bool(
+        registry and registry.entities
+    )
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request):  # noqa: ANN001 — starlette Request

@@ -780,17 +780,45 @@ class TestRequireAuthFailsFastOnMissingSpec:
                             create_mcp_server()
 
 
+# An entity spec with a single entity so the registry registers at least
+# one entity tool — "registered" means the catalog is actually usable, not
+# merely that register_entity_tools() handed back a non-None handler.
+_ENTITY_SPEC = {
+    "entities": [
+        {
+            "name": "camera",
+            "description": "Camera devices",
+            "operations": [{"action": "list", "method": "GET", "path": "/cameras"}],
+        }
+    ]
+}
+
+
 class TestHealthEndpoint:
-    """/health reflects whether the catalog is actually usable."""
+    """/health reflects whether the catalog is actually usable.
 
-    def _make_request(self):
-        return MagicMock()
+    These drive /health over HTTP via an in-process ASGI client rather than
+    reaching into FastMCP internals (e.g. ``_additional_http_routes``), so
+    the tests stay robust if FastMCP restructures its route storage and
+    exercise the real ASGI path the kubelet hits. They also keep the request
+    inside the env-patch block, since the handler reads ENABLE_CODE_SEARCH
+    live at call time.
+    """
 
-    def _get_health_route(self, mcp):
-        for route in mcp._additional_http_routes:
-            if getattr(route, "path", None) == "/health":
-                return route
-        raise AssertionError("/health route not registered")
+    def _request_health(self, mcp):
+        import httpx
+
+        app = mcp.http_app()
+
+        async def go():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                async with app.router.lifespan_context(app):
+                    return await client.get("/health")
+
+        return asyncio.run(go())
 
     def test_health_ok_when_entity_tools_registered(self):
         with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
@@ -800,13 +828,16 @@ class TestHealthEndpoint:
                         "openfilter_mcp.server.fetch_openapi_spec_with_retry",
                         return_value=_MINIMAL_SPEC,
                     ):
-                        from openfilter_mcp.server import create_mcp_server
+                        with patch(
+                            "openfilter_mcp.server.get_entity_spec",
+                            return_value=_ENTITY_SPEC,
+                        ):
+                            from openfilter_mcp.server import create_mcp_server
 
-                        mcp = create_mcp_server()
-
-        route = self._get_health_route(mcp)
-        resp = asyncio.run(route.endpoint(self._make_request()))
-        assert resp.status_code == 200
+                            mcp = create_mcp_server()
+                            resp = self._request_health(mcp)
+                            assert resp.status_code == 200
+                            assert resp.json()["entity_tools_registered"] is True
 
     def test_health_degraded_when_no_entity_tools(self):
         # REQUIRE_AUTH=false so the missing spec degrades instead of
@@ -821,7 +852,26 @@ class TestHealthEndpoint:
                         from openfilter_mcp.server import create_mcp_server
 
                         mcp = create_mcp_server()
+                        resp = self._request_health(mcp)
+                        assert resp.status_code == 503
+                        assert resp.json()["entity_tools_registered"] is False
 
-        route = self._get_health_route(mcp)
-        resp = asyncio.run(route.endpoint(self._make_request()))
-        assert resp.status_code == 503
+    def test_health_degraded_when_spec_has_no_entities(self):
+        # A non-None spec that registers zero entities (empty paths, no
+        # entity-spec) is still a crippled catalog — /health must report 503.
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
+                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
+                    with patch(
+                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
+                        return_value=_MINIMAL_SPEC,
+                    ):
+                        with patch(
+                            "openfilter_mcp.server.get_entity_spec",
+                            return_value=None,
+                        ):
+                            from openfilter_mcp.server import create_mcp_server
+
+                            mcp = create_mcp_server()
+                            resp = self._request_health(mcp)
+                            assert resp.status_code == 503
