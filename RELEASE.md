@@ -8,6 +8,17 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 `pyproject.toml` in the same PR (the `auto-tag` workflow keys off
 `pyproject.toml` changes on main to push the tag).
 
+## [Unreleased]
+
+### Fixed
+
+- Startup no longer silently degrades to a token-tools-only catalog when the
+  OpenAPI fetch fails. The fetch now retries with capped exponential backoff
+  (absorbing the DNS cold-start race at pod startup), fails fast under
+  `REQUIRE_AUTH` rather than serving an unusable catalog, and a new
+  unauthenticated `/health` endpoint returns 503 until entity tools register
+  so the readiness probe keeps a degraded pod out of rotation.
+
 ## v0.2.3
 
 ### Added

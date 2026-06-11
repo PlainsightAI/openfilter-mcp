@@ -67,14 +67,21 @@ spec:
             - name: http
               containerPort: {{ .Values.container.port }}
               protocol: TCP
-          # TCP probes — slim image's HTTP routing for /health is not
-          # guaranteed across versions. Tradeoff: a deadlocked process
-          # that still binds the port won't be caught.
+          # Readiness is gated on the catalog being usable, not just the
+          # port being bound: /health returns 503 until entity tools are
+          # registered, so a pod that came up after a startup openapi-fetch
+          # failure stays OUT of rotation instead of silently serving a
+          # token-tools-only catalog. The endpoint is an unauthenticated
+          # custom route served by the app itself (added in server.py).
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+          # Liveness stays TCP-only: a degraded-but-bound process should be
+          # pulled from rotation (readiness) and left running for inspection
+          # / crashloop-on-restart, not killed in a tight loop by liveness.
           livenessProbe:
             tcpSocket:
               port: http
