@@ -1,10 +1,5 @@
-# image.tag is rewritten in place on every merge to main by the
-# Deployments workflow's image-policy-applier step — the trailing
-# $imagepolicy annotation is the marker it keys off. Keep it quoted:
-# an all-digit placeholder would otherwise parse as the integer 0.
-image:
-  repository: us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter-mcp
-  tag: "92f78c9e0a5157b23a2eb66eb1f0c965ca6ef6ea" # {"$imagepolicy": "staging:openfilter-mcp:tag"}
+# image.repository/tag come from gitops ArgoCD Image Updater
+# (applications/openfilter-mcp/image-tag.yaml), not this file.
 replicaCount: 1
 plainsightApiUrl: "https://api.staging.plainsight.tech"
 oauth:
