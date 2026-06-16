@@ -8,13 +8,12 @@ fullnameOverride: ""
 
 image:
   # Default repository is the public Docker Hub repository.
-  # For our managed environments, this is overridden to Google Artifact Registry (GAR) in the overrides files.
+  # For our managed environments, ArgoCD Image Updater writes overrides directly to
+  # applications/openfilter-mcp/image-tag.yaml in the gitops repo.
   repository: plainsightai/openfilter-mcp
-  # tag is owned per-environment by overrides/<env>.yaml and bumped on
-  # every merge to main by the Deployments workflow's image-policy-applier
-  # step (keyed off the Flux $imagepolicy annotation there). The default
-  # below is an inert placeholder — Argo always layers an override on top.
-  # SHA tags are immutable, so IfNotPresent is safe.
+  # tag is owned by ArgoCD Image Updater (tracking the Docker Hub slim releases).
+  # The default below is an inert placeholder — Argo always layers the updater's
+  # write-back on top. SHA tags are immutable, so IfNotPresent is safe.
   tag: "0000000000000000000000000000000000000000"
   pullPolicy: IfNotPresent
 

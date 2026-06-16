@@ -1,36 +1,41 @@
-# deployments.yaml — Continuous deployment for the managed slim
+# deployments.yaml — Continuous build for the managed slim
 # openfilter-mcp. On every merge to main, build the slim image
-# (Dockerfile.slim) to GAR tagged with the commit SHA, then roll it
-# through development → staging → production via the shared
-# deploy-service reusable workflow. Each env step rewrites image.tag in
-# deployment/openfilter-mcp/overrides/<env>.yaml and commits it back;
-# ArgoCD (the openfilter-mcp ApplicationSet in PlainsightAI/gitops)
-# syncs from there.
+# (Dockerfile.slim) to GAR tagged with the commit SHA. Rollout is no
+# longer driven from here: our managed environments deploy the public Docker
+# Hub slim releases, tracked by ArgoCD Image Updater (configured on the
+# openfilter-mcp ApplicationSet in PlainsightAI/gitops). This workflow no
+# longer needs `contents: write` or a deploy step, and is retained simply
+# to continuously exercise the GAR build path on merge.
 #
-# This is the managed-deployment path only. The tag-triggered Cloud
-# Build → Docker Hub release (auto-tag.yml + cloudbuild.yaml) still
-# publishes the public full/slim image artifacts and is unaffected.
-#
-# Mirrors plainsight-api's Deployments workflow and
-# openfilter-pipelines-controller#53.
+# The tag-triggered Cloud Build → Docker Hub release (auto-tag.yml +
+# cloudbuild.yaml) still publishes the public full/slim image artifacts
+# and is unaffected.
 name: Deployments
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 concurrency:
   group: deployments
-  cancel-in-progress: false   # serialize, don't drop a queued deploy
+  # Safe to cancel superseded builds — this workflow pushes GAR images as
+  # continuous validation, but actual rollouts track the tag-triggered
+  # Docker Hub slim releases via Image Updater.
+  cancel-in-progress: true
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-    # The deploy step commits image.tag bumps back into deployment/**;
-    # env-config changes are applied by apply-environments.yaml. Ignoring
-    # both here stops those commits retriggering a build + redeploy.
+    # Ignore chart/env edits here on purpose. This workflow builds only the
+    # app image (Dockerfile.slim) → GAR; it does not render or ship the chart.
+    # ArgoCD sources the chart live from this repo's deployment/openfilter-mcp
+    # at targetRevision HEAD (selfHeal), so a templates/values/Chart.yaml edit
+    # auto-deploys on merge WITHOUT a build. Triggering a build on a chart-only
+    # change would only produce a new-SHA image with identical code, which
+    # Image Updater (newest-build) would then redeploy — pure churn, not a
+    # delta deploy. .github/environments/** is applied by apply-environments.yaml.
     paths-ignore:
       - 'deployment/**'
       - '.github/environments/**'
@@ -53,19 +58,10 @@ jobs:
         uses: PlainsightAI/gh-actions-public/publish-docker-image@main
         env:
           # Consumed by `make build-image` / `publish-image` / `image-tag`
-          # as the image tag — the same SHA the deploy step pins.
+          # as the image tag for the GAR build.
           VERSION: ${{ github.sha }}
         with:
           environment: production
-
-  deploy:
-    needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    uses: PlainsightAI/gh-actions-public/.github/workflows/deploy-service.yaml@main
-    with:
-      service-name: openfilter-mcp
-      manifests-path: deployment
-    secrets: inherit
 
   # Build a PR-tagged image when a PR carries the `preview` label, so a
   # preview ApplicationSet in gitops can pull it. No-op until that
