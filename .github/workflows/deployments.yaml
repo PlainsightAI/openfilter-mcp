@@ -1,10 +1,11 @@
 # deployments.yaml — Continuous build for the managed slim
 # openfilter-mcp. On every merge to main, build the slim image
 # (Dockerfile.slim) to GAR tagged with the commit SHA. Rollout is no
-# longer driven from here: ArgoCD Image Updater (configured on the
-# openfilter-mcp ApplicationSet in PlainsightAI/gitops) watches GAR for
-# new SHA tags and writes the bump back into the gitops repo itself, so
-# this workflow no longer needs `contents: write` or a deploy step.
+# longer driven from here: our managed environments deploy the public Docker
+# Hub slim releases, tracked by ArgoCD Image Updater (configured on the
+# openfilter-mcp ApplicationSet in PlainsightAI/gitops). This workflow no
+# longer needs `contents: write` or a deploy step, and is retained simply
+# to continuously exercise the GAR build path on merge.
 #
 # The tag-triggered Cloud Build → Docker Hub release (auto-tag.yml +
 # cloudbuild.yaml) still publishes the public full/slim image artifacts
@@ -17,12 +18,10 @@ permissions:
 
 concurrency:
   group: deployments
-  # Build-only now, but do NOT cancel superseded builds: ArgoCD Image Updater
-  # selects the newest GAR image tagged with a commit SHA, so every merged SHA
-  # must have its image built. Dropping an intermediate build would leave that
-  # SHA with no image — invisible to Image Updater and unavailable for a
-  # rollback/pin to a non-HEAD SHA.
-  cancel-in-progress: false
+  # Safe to cancel superseded builds — this workflow pushes GAR images as
+  # continuous validation, but actual rollouts track the tag-triggered
+  # Docker Hub slim releases via Image Updater.
+  cancel-in-progress: true
 
 on:
   workflow_dispatch:
@@ -59,8 +58,7 @@ jobs:
         uses: PlainsightAI/gh-actions-public/publish-docker-image@main
         env:
           # Consumed by `make build-image` / `publish-image` / `image-tag`
-          # as the image tag — the SHA tag ArgoCD Image Updater detects in
-          # GAR and writes into the gitops repo.
+          # as the image tag for the GAR build.
           VERSION: ${{ github.sha }}
         with:
           environment: production
