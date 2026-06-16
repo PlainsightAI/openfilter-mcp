@@ -7,4 +7,7 @@ version: 0.1.0
 # per-environment by gitops's ArgoCD Image Updater, which writes
 # applications/openfilter-mcp/image-tag.yaml; appVersion is pinned so it
 # doesn't lag behind and ship a misleading app.kubernetes.io/version label.
+# This chart is also published to oci://registry-1.docker.io/plainsightai on
+# every v*.*.* tag (.github/workflows/publish-chart.yaml) so external users can
+# `helm install`; at package time --version/--app-version are set from the tag.
 appVersion: "0.0.0"
