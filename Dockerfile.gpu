@@ -18,7 +18,12 @@ RUN uv sync --python 3.12 --no-dev --group code-search --no-install-workspace
 FROM debian:bookworm-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
 
-RUN apt-get update && apt-get install -y git curl libgomp1 && rm -rf /var/lib/apt/lists/*
+# Deterministically clear libssh2 CVE-2026-55200 (PLAT-1259). Final stage is
+# debian:bookworm-slim (Debian 12), where the package is libssh2-1 (not the
+# trixie t64 name used in Dockerfile/Dockerfile.slim).
+RUN apt-get update && apt-get install -y git curl libgomp1 \
+    && apt-get install -y --only-upgrade libssh2-1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN uv python install 3.12
 
 # Copy CUDA runtime libs from the builder (only what llama-cpp needs at runtime)
