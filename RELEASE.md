@@ -14,10 +14,12 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ### Security
 
-- Rebuild on the current `python:3.12-slim` base to clear a CRITICAL container-image
-  vulnerability flagged by Security Command Center on the deployed image — `libssh2`
-  CVE-2026-55200 (CVSS 8.1, exploit available), an OS base-layer package. No application
-  changes; a fresh build pulls the patched `libssh2`. (PLAT-1259)
+- Clear a CRITICAL container-image vulnerability flagged by Security Command Center —
+  `libssh2` CVE-2026-55200 (CVSS 8.1, exploit available), an OS base-layer package.
+  Rebuilds on `python:3.12-slim` and **explicitly upgrades `libssh2`** so the fix is
+  deterministic rather than dependent on the floating base snapshot. Also bumps
+  `uv.lock` to `0.2.4` so `uv sync --locked` stays reproducible. No application changes.
+  (PLAT-1259)
 
 ### Fixed
 
