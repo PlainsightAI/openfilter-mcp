@@ -10,6 +10,15 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+## v0.2.4
+
+### Security
+
+- Rebuild on the current `python:3.12-slim` base to clear a CRITICAL container-image
+  vulnerability flagged by Security Command Center on the deployed image — `libssh2`
+  CVE-2026-55200 (CVSS 8.1, exploit available), an OS base-layer package. No application
+  changes; a fresh build pulls the patched `libssh2`. (PLAT-1259)
+
 ### Fixed
 
 - Startup no longer silently degrades to a token-tools-only catalog when the
