@@ -10,6 +10,19 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+## v0.2.4
+
+### Security
+
+- Clear a CRITICAL container-image vulnerability flagged by Security Command Center —
+  `libssh2` CVE-2026-55200 (CVSS 8.1, exploit available), an OS base-layer package.
+  All published images are rebuilt to carry the fixed `libssh2` deterministically:
+  the slim image (`Dockerfile.slim`) and `Dockerfile` explicitly upgrade `libssh2-1t64`
+  on `python:3.12-slim`; the full/`:latest` image (`Dockerfile.gpu`) moves its runtime
+  stage from `debian:bookworm-slim` (no fixed build) to `debian:trixie-slim`, where the
+  fix ships as `libssh2-1t64` 1.11.1-1+deb13u1 (DSA-6365-1). Also bumps `uv.lock` to
+  `0.2.4` so `uv sync --locked` stays reproducible. No application changes. (PLAT-1259)
+
 ### Fixed
 
 - Startup no longer silently degrades to a token-tools-only catalog when the

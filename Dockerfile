@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     gcc \
     g++ \
+    && apt-get install -y --only-upgrade libssh2-1t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Disable strict host key checking for container
