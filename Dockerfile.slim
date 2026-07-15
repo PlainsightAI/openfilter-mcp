@@ -1,10 +1,15 @@
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
 
-# Explicitly upgrade libssh2 (trixie t64 package) so CVE-2026-55200 is cleared
-# deterministically, not only when the floating base already happens to carry the
+# No git/curl in the slim image: the slim build excludes the `code-search` group
+# (the only git-sourced dep, llama-cpp-python), so uv sync needs no git, and the
+# server talks to plainsight-api over httpx — not curl — with httpGet/tcpSocket
+# probes. Dropping git also drops its transitive `perl`, clearing the two Debian
+# trixie perl CVEs that have no upstream fix (CVE-2026-8376, CVE-2026-42496).
+# Still explicitly upgrade libssh2 (trixie t64 package) so CVE-2026-55200 is
+# cleared deterministically, not only when the floating base happens to carry the
 # patched package (PLAT-1259).
-RUN apt-get update && apt-get install -y git curl \
+RUN apt-get update \
     && apt-get install -y --only-upgrade libssh2-1t64 \
     && rm -rf /var/lib/apt/lists/*
 
