@@ -22,6 +22,10 @@ STUB
 
 # Slim build: no code-context, no code search indexes, no ML dependencies
 ENV ENABLE_CODE_SEARCH=false
+# server.py imports GitPython at startup, which raises at import if the git
+# binary is absent. This image has no git (unused with code search off); quiet
+# defers GitPython's check so import succeeds. Required — do not remove.
+ENV GIT_PYTHON_REFRESH=quiet
 # Fail fast at startup if no auth token is available -- without code search
 # the server would otherwise silently serve zero tools.
 ENV REQUIRE_AUTH=true

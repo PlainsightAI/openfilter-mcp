@@ -10,6 +10,17 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+## v0.2.6
+
+### Fixed
+
+- Slim image no longer crash-loops at startup. v0.2.5 dropped `git` from the slim
+  image, but `openfilter_mcp.server` imports GitPython (`preindex_repos`) at module
+  load, and GitPython raises `ImportError: Bad git executable` when the binary is
+  absent — even with code search off, where git is never actually invoked. Set
+  `GIT_PYTHON_REFRESH=quiet` so GitPython defers its executable check and the import
+  succeeds. Keeps the v0.2.5 security win (no `git`/`perl`/`libssh2` in the image).
+
 ## v0.2.5
 
 ### Security
