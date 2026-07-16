@@ -39,7 +39,16 @@ jobs:
       - name: Lint and render chart
         run: |
           helm lint deployment/openfilter-mcp
-          helm template deployment/openfilter-mcp >/dev/null
+          # Render against each environment's overrides, not base values. The
+          # chart requires per-env values (e.g. plainsightApiUrl, enforced by
+          # the openfilter-mcp.validate helper), so a base-values render
+          # legitimately fails with "must be set in overrides/<env>.yaml".
+          # Rendering every env also validates that each one templates cleanly.
+          for env in development staging production; do
+            echo "== render: $env =="
+            helm template deployment/openfilter-mcp \
+              -f "deployment/openfilter-mcp/overrides/$env.yaml" >/dev/null
+          done
 
       - name: Log in to DockerHub (Helm OCI)
         env:

@@ -10,6 +10,31 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+## v0.2.5
+
+### Security
+
+- The slim image (`Dockerfile.slim`) now installs **no OS packages**, clearing
+  three CRITICAL Security Command Center findings by removal. It previously pulled
+  in `git` and `curl` but needs neither: the slim build excludes the `code-search`
+  group (the sole git-sourced dep, `llama-cpp-python`), so `uv sync` needs no `git`,
+  and the server talks to plainsight-api over `httpx` — not `curl` — with
+  `httpGet`/`tcpSocket` probes. Dropping them removes `git`'s transitive `perl`
+  (CVE-2026-42496 CVSS 9.1, CVE-2026-8376 CVSS 7.3 — **no upstream Debian trixie
+  fix**, so removal is the only lever, unlike the v0.2.4 libssh2 upgrade) and
+  `curl`'s transitive `libssh2` (CVE-2026-55200, superseding v0.2.4's explicit
+  upgrade for this image). Only essential `perl-base` remains (not flagged), and the
+  image shrinks. The full/`:latest` and default images keep `git` (used at runtime
+  for code-search clones) and are unaffected. (PLAT-1259)
+
+### Changed
+
+- `publish-chart` CI now renders the Helm chart against each environment's overrides
+  (`development`/`staging`/`production`) instead of base values. The chart requires
+  per-env values (`plainsightApiUrl`, via the `openfilter-mcp.validate` helper), so
+  the old base-values `helm template` failed on every tag — aborting the chart
+  publish. Rendering per-env fixes that and validates all three environments.
+
 ## v0.2.4
 
 ### Security
