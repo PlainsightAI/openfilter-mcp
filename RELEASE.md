@@ -14,16 +14,18 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ### Security
 
-- Drop the transitive `perl` OS package from the slim image (`Dockerfile.slim`),
-  clearing two CRITICAL Security Command Center findings that have **no upstream
-  Debian fix** — `perl` 5.40.1-6 on trixie: CVE-2026-42496 (CVSS 9.1) and
-  CVE-2026-8376 (CVSS 7.3). `perl` was pulled in only as a dependency of `git`,
-  which the slim image needs neither at build (the `code-search` group — the sole
-  git-sourced dep, `llama-cpp-python` — is excluded) nor at runtime (the server
-  talks to plainsight-api over `httpx`, and its probes are `httpGet`/`tcpSocket`,
-  not `curl`). Removing `git`/`curl` leaves only essential `perl-base` (not flagged)
-  and shrinks the image. The full/`:latest` and default images keep `git` (they use
-  it at runtime for code-search clones) and are unaffected. (PLAT-1259)
+- The slim image (`Dockerfile.slim`) now installs **no OS packages**, clearing
+  three CRITICAL Security Command Center findings by removal. It previously pulled
+  in `git` and `curl` but needs neither: the slim build excludes the `code-search`
+  group (the sole git-sourced dep, `llama-cpp-python`), so `uv sync` needs no `git`,
+  and the server talks to plainsight-api over `httpx` — not `curl` — with
+  `httpGet`/`tcpSocket` probes. Dropping them removes `git`'s transitive `perl`
+  (CVE-2026-42496 CVSS 9.1, CVE-2026-8376 CVSS 7.3 — **no upstream Debian trixie
+  fix**, so removal is the only lever, unlike the v0.2.4 libssh2 upgrade) and
+  `curl`'s transitive `libssh2` (CVE-2026-55200, superseding v0.2.4's explicit
+  upgrade for this image). Only essential `perl-base` remains (not flagged), and the
+  image shrinks. The full/`:latest` and default images keep `git` (used at runtime
+  for code-search clones) and are unaffected. (PLAT-1259)
 
 ### Changed
 
