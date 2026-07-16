@@ -1,14 +1,9 @@
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /uvx /bin/
 
-# The slim image installs NO OS packages. It previously pulled in git + curl,
-# but needs neither: the slim build excludes the `code-search` group (the only
-# git-sourced dep, llama-cpp-python), so `uv sync` needs no git, and the server
-# talks to plainsight-api over httpx — not curl — with httpGet/tcpSocket probes.
-# Dropping them clears three CRITICAL SCC findings by removal (no apt upgrade
-# needed): git's transitive `perl` (CVE-2026-42496, CVE-2026-8376 — unfixed in
-# Debian trixie) and curl's transitive `libssh2` (CVE-2026-55200). Only essential
-# `perl-base` remains (not SCC-flagged). (PLAT-1259)
+# Install no OS packages: git/curl are unused here (uv sync excludes the
+# git-sourced code-search group; runtime uses httpx, not curl) and drag in
+# vulnerable transitive perl/libssh2. Don't add them to the slim image.
 
 WORKDIR /app
 
