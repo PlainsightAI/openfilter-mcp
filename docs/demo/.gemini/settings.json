@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "plainsight": {
+      "httpUrl": "http://localhost:3000/mcp"
+    }
+  }
+}

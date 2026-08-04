@@ -13,3 +13,6 @@ wheels/
 .gemini/
 .claude/
 .cursor/
+
+# demo client config examples are tracked (the rule above targets local CLI state)
+!docs/demo/.gemini/
