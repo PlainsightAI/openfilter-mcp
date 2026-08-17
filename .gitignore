@@ -13,3 +13,13 @@ wheels/
 .gemini/
 .claude/
 .cursor/
+.codex/
+
+# demo client config examples are tracked (the rules above target local CLI state).
+# One negation per base rule: without .codex/ above, its negation matched nothing,
+# and without these two, docs/demo/.claude/ and docs/demo/.cursor/ stayed ignored
+# and were only tracked because they predate the rules.
+!docs/demo/.gemini/
+!docs/demo/.codex/
+!docs/demo/.claude/
+!docs/demo/.cursor/

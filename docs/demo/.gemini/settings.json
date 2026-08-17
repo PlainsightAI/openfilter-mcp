@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "openfilter": {
+      "httpUrl": "http://localhost:3000/mcp"
+    }
+  }
+}

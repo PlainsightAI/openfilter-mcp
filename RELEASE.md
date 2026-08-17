@@ -10,6 +10,16 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+### Added
+
+- Validated client config examples for Gemini (`docs/demo/.gemini/settings.json`) and
+  Codex (`docs/demo/.codex/config.toml`), proven by end-to-end runs against dev
+  (PLAT-1420): each client drove the full create -> version -> media -> instance ->
+  start cycle to a running pipeline from a natural-language prompt.
+- Troubleshooting section in `docs/configuration.md`: GPU requirement of the full
+  image (use `-slim` locally), expired psctl token symptom, scoped-token session
+  binding in scripted use, and Gemini headless flags.
+
 ## v0.2.6
 
 ### Fixed
