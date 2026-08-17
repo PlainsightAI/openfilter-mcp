@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "plainsight": {
+    "openfilter": {
       "httpUrl": "http://localhost:3000/mcp"
     }
   }

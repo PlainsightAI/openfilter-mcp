@@ -1,9 +1,9 @@
 # Codex CLI config for the Plainsight MCP server (validated end-to-end, PLAT-1420).
-# Register with: codex mcp add plainsight --url http://localhost:3000/mcp --bearer-token-env-var PS_MCP_TOKEN
+# Register with: codex mcp add openfilter --url http://localhost:3000/mcp --bearer-token-env-var PS_MCP_TOKEN
 # Notes:
 # - Codex requires a bearer token env var for URL-based MCP servers (set PS_MCP_TOKEN to a Plainsight access token).
 # - Headless runs (codex exec) auto-cancel MCP tool consent prompts; use interactive mode once to trust the
 #   server, or pass the explicit bypass flag in automation.
-[mcp_servers.plainsight]
+[mcp_servers.openfilter]
 url = "http://localhost:3000/mcp"
 bearer_token_env_var = "PS_MCP_TOKEN"
