@@ -35,6 +35,8 @@ RUN uv sync --no-dev --no-install-workspace
 
 # Now copy source (this layer invalidates on code changes)
 COPY src/ src/
+# Served by the server at GET /llms.txt
+COPY llms.txt ./
 
 # Install the workspace package itself (fast — deps already cached)
 RUN uv sync --no-dev

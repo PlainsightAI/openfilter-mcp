@@ -875,3 +875,67 @@ class TestHealthEndpoint:
                             mcp = create_mcp_server()
                             resp = self._request_health(mcp)
                             assert resp.status_code == 503
+
+
+class TestLlmsTxtEndpoint:
+    """GET /llms.txt serves the repo's discovery file (PLAT-1421).
+
+    Same in-process ASGI approach as TestHealthEndpoint: exercise the real
+    route rather than FastMCP internals. The 404 case matters because the
+    file lives at the repo root and is copied into the images by hand — if
+    a Dockerfile ever drops it, the endpoint must fail loudly, not serve
+    something stale.
+    """
+
+    def _request_llms_txt(self, mcp):
+        import httpx
+
+        app = mcp.http_app()
+
+        async def go():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                async with app.router.lifespan_context(app):
+                    return await client.get("/llms.txt")
+
+        return asyncio.run(go())
+
+    def _server(self):
+        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
+            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
+                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
+                    with patch(
+                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
+                        return_value=_MINIMAL_SPEC,
+                    ):
+                        with patch(
+                            "openfilter_mcp.server.get_entity_spec",
+                            return_value=_ENTITY_SPEC,
+                        ):
+                            from openfilter_mcp.server import create_mcp_server
+
+                            return create_mcp_server()
+
+    def test_serves_repo_llms_txt(self):
+        resp = self._request_llms_txt(self._server())
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/plain")
+        # The llmstxt.org format: H1 title then a blockquote summary.
+        assert resp.text.startswith("# OpenFilter MCP")
+        assert "\n> " in resp.text
+
+    def test_404_when_file_is_missing(self, tmp_path, monkeypatch):
+        mcp = self._server()
+        # Both lookup paths must miss: the repo root derived from the module
+        # location, and the process cwd.
+        monkeypatch.setattr(
+            "openfilter_mcp.server.__file__", str(tmp_path / "a" / "b" / "server.py")
+        )
+        monkeypatch.chdir(tmp_path)
+
+        resp = self._request_llms_txt(mcp)
+
+        assert resp.status_code == 404

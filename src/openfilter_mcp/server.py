@@ -28,6 +28,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict
 
 import httpx
@@ -680,6 +681,23 @@ def create_mcp_server() -> FastMCP:
     entity_tools_registered = entity_handler is not None and bool(
         registry and registry.entities
     )
+
+    @mcp.custom_route("/llms.txt", methods=["GET"])
+    async def llms_txt(request):  # noqa: ANN001 — starlette Request
+        """Serve the repo's llms.txt so an agent pointed at a running server
+        can discover the docs without cloning the repo."""
+        from starlette.responses import PlainTextResponse, Response
+
+        # Single source of truth is the file at the repo root: parents[2] finds
+        # it in a source checkout, cwd finds it in the image (WORKDIR /app).
+        candidates = (
+            Path(__file__).resolve().parents[2] / "llms.txt",
+            Path.cwd() / "llms.txt",
+        )
+        for path in candidates:
+            if path.is_file():
+                return PlainTextResponse(path.read_text(encoding="utf-8"))
+        return Response("llms.txt not found", status_code=404, media_type="text/plain")
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request):  # noqa: ANN001 — starlette Request
