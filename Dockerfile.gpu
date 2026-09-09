@@ -44,6 +44,8 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy source + data
 COPY src/ src/
+# Served by the server at GET /llms.txt
+COPY llms.txt ./
 COPY indexes/ indexes/
 COPY openfilter_repos_clones/ openfilter_repos_clones/
 
