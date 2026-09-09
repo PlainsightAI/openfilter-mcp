@@ -1,0 +1,33 @@
+# OpenFilter MCP
+
+> MCP server for the Plainsight OpenFilter platform. It exposes seven generic entity tools that cover the whole Plainsight API — entity types and schemas are discovered at runtime from the OpenAPI spec, so the tool count stays at seven no matter how many endpoints exist — plus scoped-token elicitation and optional semantic code search over the OpenFilter monorepo.
+
+An agent connects over streamable HTTP at `http://localhost:3000/mcp` after running the
+published image (`plainsightai/openfilter-mcp:latest-slim`); the README has the full
+quickstart. Two things trip agents up: entity type names are lowercase with no separators
+(`filterpipeline`, `pipelineinstance`, `sourceconfig`), and every API call needs a scoped
+token, requested with `request_scoped_token` and approved by the user.
+
+## Docs
+
+- [README](https://github.com/PlainsightAI/openfilter-mcp/blob/main/README.md): what the server is, Docker quickstart, client configuration snippet.
+- [Tools](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/tools.md): every tool, how runtime entity discovery works, how to choose scope breadth.
+- [Configuration](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/configuration.md): authentication, environment variables, troubleshooting.
+- [Development](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/development.md): dev setup, building, testing, releasing.
+
+## Agent skill
+
+- [SKILL.md](https://github.com/PlainsightAI/openfilter-mcp/blob/main/skills/openfilter-mcp/SKILL.md): the wiring and the validated create -> version -> media -> instance -> start sequence, as an Agent Skill.
+
+## Client configs
+
+- [Claude Code](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/demo/.claude/mcp.json)
+- [Cursor](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/demo/.cursor/mcp.json)
+- [Codex CLI](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/demo/.codex/config.toml)
+- [Gemini CLI](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/demo/.gemini/settings.json)
+
+## Optional
+
+- [Scoped-token demo script](https://github.com/PlainsightAI/openfilter-mcp/blob/main/docs/demo/AGENTS.md): narrated walkthrough of the approval flow.
+- [Release notes](https://github.com/PlainsightAI/openfilter-mcp/blob/main/RELEASE.md)
+- [Plainsight API OpenAPI spec](https://api.prod.plainsight.tech/openapi.json): the source the entity tools are generated from.
