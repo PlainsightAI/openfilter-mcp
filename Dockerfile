@@ -50,6 +50,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ src/
 COPY README.md ./
+# Served by the server at GET /llms.txt
+COPY llms.txt ./
 COPY code-context/ code-context/
 
 # Copy the built index and clones from the indexer stage

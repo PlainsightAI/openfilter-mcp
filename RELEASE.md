@@ -12,6 +12,11 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ### Added
 
+- `GET /llms.txt` on the running server: serves the repo-root `llms.txt` so an agent
+  pointed at an endpoint can discover the docs without cloning the repo. The file is the
+  single source (copied into all three images); the endpoint 404s rather than serving a
+  stale copy if it is missing (PLAT-1421).
+
 - `llms.txt` at the repo root ([llmstxt.org](https://llmstxt.org) format): a single
   discovery entry point pointing agents at the docs, the client configs and the OpenAPI
   spec, so a model can learn what this server is without reading the source (PLAT-1421).
