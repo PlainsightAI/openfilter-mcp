@@ -794,6 +794,48 @@ _ENTITY_SPEC = {
 }
 
 
+def _request_path(mcp, path: str):
+    """Drive one unauthenticated route over an in-process ASGI client.
+
+    Shared by the /health and /llms.txt suites: both want the real ASGI path
+    rather than FastMCP internals, and the only thing that differs is the URL.
+    """
+    import httpx
+
+    app = mcp.http_app()
+
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async with app.router.lifespan_context(app):
+                return await client.get(path)
+
+    return asyncio.run(go())
+
+
+def _build_server(entity_spec=_ENTITY_SPEC):
+    """A server with the catalog patched out, for the route tests.
+
+    The five-deep patch nest is the price of create_mcp_server reaching for
+    the token, the org, the spec and the entity spec at import time; keeping
+    one copy means the next endpoint test does not add a third.
+    """
+    with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
+        with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
+            with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
+                with patch(
+                    "openfilter_mcp.server.fetch_openapi_spec_with_retry",
+                    return_value=_MINIMAL_SPEC,
+                ):
+                    with patch(
+                        "openfilter_mcp.server.get_entity_spec",
+                        return_value=entity_spec,
+                    ):
+                        from openfilter_mcp.server import create_mcp_server
+
+                        return create_mcp_server()
+
+
 class TestHealthEndpoint:
     """/health reflects whether the catalog is actually usable.
 
@@ -806,19 +848,7 @@ class TestHealthEndpoint:
     """
 
     def _request_health(self, mcp):
-        import httpx
-
-        app = mcp.http_app()
-
-        async def go():
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as client:
-                async with app.router.lifespan_context(app):
-                    return await client.get("/health")
-
-        return asyncio.run(go())
+        return _request_path(mcp, "/health")
 
     def test_health_ok_when_entity_tools_registered(self):
         with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
@@ -888,35 +918,10 @@ class TestLlmsTxtEndpoint:
     """
 
     def _request_llms_txt(self, mcp):
-        import httpx
-
-        app = mcp.http_app()
-
-        async def go():
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as client:
-                async with app.router.lifespan_context(app):
-                    return await client.get("/llms.txt")
-
-        return asyncio.run(go())
+        return _request_path(mcp, "/llms.txt")
 
     def _server(self):
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
-            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
-                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
-                    with patch(
-                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
-                        return_value=_MINIMAL_SPEC,
-                    ):
-                        with patch(
-                            "openfilter_mcp.server.get_entity_spec",
-                            return_value=_ENTITY_SPEC,
-                        ):
-                            from openfilter_mcp.server import create_mcp_server
-
-                            return create_mcp_server()
+        return _build_server()
 
     def test_serves_repo_llms_txt(self):
         resp = self._request_llms_txt(self._server())
@@ -929,13 +934,40 @@ class TestLlmsTxtEndpoint:
 
     def test_404_when_file_is_missing(self, tmp_path, monkeypatch):
         mcp = self._server()
-        # Both lookup paths must miss: the repo root derived from the module
-        # location, and the process cwd.
+        # Both lookup paths must miss, and they have to be distinct paths to
+        # prove it: pointing cwd at tmp_path collapses both candidates onto
+        # tmp_path/llms.txt, and the test then passes even if the handler
+        # only consults one of them.
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
         monkeypatch.setattr(
             "openfilter_mcp.server.__file__", str(tmp_path / "a" / "b" / "server.py")
         )
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.chdir(cwd)
 
         resp = self._request_llms_txt(mcp)
 
         assert resp.status_code == 404
+
+    def test_falls_back_to_cwd_when_the_package_root_has_none(self, tmp_path, monkeypatch):
+        """The second candidate, which a source checkout never exercises.
+
+        parents[2] resolves in a checkout and in all three images alike, since
+        each installs the workspace package editable from /app/src. Only a
+        non-editable install reaches this branch, so without this test the
+        candidate could be deleted and the suite would stay green.
+        """
+        mcp = self._server()
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / "llms.txt").write_text("# From cwd\n\n> served by the fallback\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "openfilter_mcp.server.__file__", str(tmp_path / "a" / "b" / "server.py")
+        )
+        monkeypatch.chdir(cwd)
+
+        resp = self._request_llms_txt(mcp)
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/plain")
+        assert resp.text.startswith("# From cwd")
