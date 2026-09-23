@@ -6,7 +6,7 @@ An [MCP] server that gives AI agents access to the Plainsight OpenFilter platfor
 
 The server exposes a small, fixed set of tools. The tool count does not grow with the API.
 
-**Platform tools** — 7 generic entity tools that cover the entire Plainsight API. Entity types and schemas are discovered at runtime from the OpenAPI spec via full-text search ([tantivy](https://github.com/quickwit-oss/tantivy)), so agents find what they need without loading hundreds of definitions into context.
+**Platform tools** — 8 generic entity tools that cover the entire Plainsight API. Entity types and schemas are discovered at runtime from the OpenAPI spec via full-text search ([tantivy](https://github.com/quickwit-oss/tantivy)), so agents find what they need without loading hundreds of definitions into context.
 
 **Code search** (optional) — semantic search over indexed OpenFilter repositories. Only available in the full image.
 

@@ -5,7 +5,7 @@ description: Use when building or operating Plainsight OpenFilter vision pipelin
 
 # OpenFilter MCP
 
-The `openfilter` MCP server exposes the whole Plainsight API through seven generic entity
+The `openfilter` MCP server exposes the whole Plainsight API through eight generic entity
 tools plus scoped-token elicitation. Entity types and schemas come from the live OpenAPI
 spec, so discovery happens at runtime, not from this file.
 
@@ -28,9 +28,14 @@ this skill.
 ## Rules that cost time when ignored
 
 - Entity type names are lowercase with no separators: `filterpipeline`, `pipelineinstance`,
-  `sourceconfig`. Run `list_entity_types` to confirm before guessing.
+  `filterimage`. Run `list_entity_types` to confirm before guessing.
 - `list_entities` filters through `filters` (query string), not `query_params`.
-  `path_params` is only for path placeholders.
+  `path_params` is only for path placeholders. A scoped list is a path placeholder, not a
+  filter: media is `GET /projects/{project_id}/medias`, whose only query params are
+  `media_source`, `limit` and `offset`.
+- Creates are project- or pipeline-scoped and need the id in `path_params`:
+  `filterpipeline` and `pipelineinstance` take `project_id`, `pipelineversion` takes
+  `pipeline_id`.
 - `get_entity` takes `id`; `get_entity_type_info` takes `entity_names` (a list).
 - Every API call needs a scoped token. Request it first, once, for the whole task.
 
@@ -54,9 +59,9 @@ and Codex against dev).
 1. `create_entity("filterpipeline", data={...})` — a graph of public filters, e.g.
    `video-in -> huggingface-vision -> webvis`.
 2. `create_entity("pipelineversion", data={...})` — the version that gets deployed.
-3. `list_entities("media", filters={"project": "<project_id>"})` — pick the media and bind
-   it to the `video-in` node.
-4. `create_entity("pipelineinstance", data={"pipeline_version_id": "...", "media_bindings": [...]})`
+3. `list_entities("media", path_params={"project_id": "<project_id>"})` — pick the media
+   and bind it to the `video-in` node.
+4. `create_entity("pipelineinstance", data={"name": "...", "pipeline_version_id": "...", "media_bindings": [...]})`
    — created in `pending`.
 5. `entity_action("pipelineinstance", action="start", id="<instance_id>")`, then
    `poll_until_change(endpoint="/pipeline-instances/<id>", field="status", target_values="running,failed")`.

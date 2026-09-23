@@ -18,7 +18,6 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 - Agent Skill at `skills/openfilter-mcp/SKILL.md`: how to connect, how to scope a session
   token, and the create -> version -> media -> instance -> start sequence validated in
   PLAT-1420, plus the four API-shape mistakes that cost time in client testing (PLAT-1421).
-
 - Validated client config examples for Gemini (`docs/demo/.gemini/settings.json`) and
   Codex (`docs/demo/.codex/config.toml`), proven by end-to-end runs against dev
   (PLAT-1420): each client drove the full create -> version -> media -> instance ->
