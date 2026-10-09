@@ -61,8 +61,9 @@ and Codex against dev).
 2. `create_entity("pipelineversion", data={...})` — the version that gets deployed.
 3. `list_entities("media", path_params={"project_id": "<project_id>"})` — pick the media
    and bind it to the `video-in` node.
-4. `create_entity("pipelineinstance", data={"name": "...", "pipeline_version_id": "...", "media_bindings": [...]})`
-   — created in `pending`.
+4. `create_entity("pipelineinstance", path_params={"project_id": "<project_id>"},
+   data={"name": "...", "pipeline_version_id": "...", "media_bindings": [...]})` — created in
+   `pending`.
 5. `entity_action("pipelineinstance", action="start", id="<instance_id>")`, then
    `poll_until_change(endpoint="/pipeline-instances/<id>", field="status", target_values="running,failed")`.
 
