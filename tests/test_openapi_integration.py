@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -813,19 +814,26 @@ def _request_path(mcp, path: str):
     return asyncio.run(go())
 
 
-def _build_server(entity_spec=_ENTITY_SPEC):
-    """A server with the catalog patched out, for the route tests.
+@contextmanager
+def _build_server(spec=_MINIMAL_SPEC, entity_spec=_ENTITY_SPEC):
+    """Yield a server with the catalog patched out, patches still in place.
 
-    The five-deep patch nest is the price of create_mcp_server reaching for
-    the token, the org, the spec and the entity spec at import time; keeping
-    one copy means the next endpoint test does not add a third.
+    A context manager rather than a factory because /health reads
+    ENABLE_CODE_SEARCH live inside the handler, so the request has to run
+    inside the env patch and not only the build. Returning the server would
+    have left every caller rebuilding the nest around its own request, which
+    is what it did.
+
+    The five-deep nest is the price of create_mcp_server reaching for the
+    token, the org, the spec and the entity spec while it builds. One copy
+    here means the next endpoint suite does not add another.
     """
     with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
         with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
             with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
                 with patch(
                     "openfilter_mcp.server.fetch_openapi_spec_with_retry",
-                    return_value=_MINIMAL_SPEC,
+                    return_value=spec,
                 ):
                     with patch(
                         "openfilter_mcp.server.get_entity_spec",
@@ -833,7 +841,7 @@ def _build_server(entity_spec=_ENTITY_SPEC):
                     ):
                         from openfilter_mcp.server import create_mcp_server
 
-                        return create_mcp_server()
+                        yield create_mcp_server()
 
 
 class TestHealthEndpoint:
@@ -851,60 +859,28 @@ class TestHealthEndpoint:
         return _request_path(mcp, "/health")
 
     def test_health_ok_when_entity_tools_registered(self):
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
-            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
-                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
-                    with patch(
-                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
-                        return_value=_MINIMAL_SPEC,
-                    ):
-                        with patch(
-                            "openfilter_mcp.server.get_entity_spec",
-                            return_value=_ENTITY_SPEC,
-                        ):
-                            from openfilter_mcp.server import create_mcp_server
+        with _build_server() as mcp:
+            resp = self._request_health(mcp)
 
-                            mcp = create_mcp_server()
-                            resp = self._request_health(mcp)
-                            assert resp.status_code == 200
-                            assert resp.json()["entity_tools_registered"] is True
+        assert resp.status_code == 200
+        assert resp.json()["entity_tools_registered"] is True
 
     def test_health_degraded_when_no_entity_tools(self):
         # REQUIRE_AUTH=false so the missing spec degrades instead of
         # crashing — that's the path where /health must report 503.
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
-            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
-                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
-                    with patch(
-                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
-                        return_value=None,
-                    ):
-                        from openfilter_mcp.server import create_mcp_server
+        with _build_server(spec=None) as mcp:
+            resp = self._request_health(mcp)
 
-                        mcp = create_mcp_server()
-                        resp = self._request_health(mcp)
-                        assert resp.status_code == 503
-                        assert resp.json()["entity_tools_registered"] is False
+        assert resp.status_code == 503
+        assert resp.json()["entity_tools_registered"] is False
 
     def test_health_degraded_when_spec_has_no_entities(self):
         # A non-None spec that registers zero entities (empty paths, no
         # entity-spec) is still a crippled catalog — /health must report 503.
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "false", "ENABLE_CODE_SEARCH": "false"}):
-            with patch("openfilter_mcp.server.get_auth_token", return_value="t"):
-                with patch("openfilter_mcp.server.get_effective_org_id", return_value=None):
-                    with patch(
-                        "openfilter_mcp.server.fetch_openapi_spec_with_retry",
-                        return_value=_MINIMAL_SPEC,
-                    ):
-                        with patch(
-                            "openfilter_mcp.server.get_entity_spec",
-                            return_value=None,
-                        ):
-                            from openfilter_mcp.server import create_mcp_server
+        with _build_server(entity_spec=None) as mcp:
+            resp = self._request_health(mcp)
 
-                            mcp = create_mcp_server()
-                            resp = self._request_health(mcp)
-                            assert resp.status_code == 503
+        assert resp.status_code == 503
 
 
 class TestLlmsTxtEndpoint:
@@ -920,11 +896,9 @@ class TestLlmsTxtEndpoint:
     def _request_llms_txt(self, mcp):
         return _request_path(mcp, "/llms.txt")
 
-    def _server(self):
-        return _build_server()
-
     def test_serves_repo_llms_txt(self):
-        resp = self._request_llms_txt(self._server())
+        with _build_server() as mcp:
+            resp = self._request_llms_txt(mcp)
 
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/plain")
@@ -933,7 +907,6 @@ class TestLlmsTxtEndpoint:
         assert "\n> " in resp.text
 
     def test_404_when_file_is_missing(self, tmp_path, monkeypatch):
-        mcp = self._server()
         # Both lookup paths must miss, and they have to be distinct paths to
         # prove it: pointing cwd at tmp_path collapses both candidates onto
         # tmp_path/llms.txt, and the test then passes even if the handler
@@ -945,7 +918,8 @@ class TestLlmsTxtEndpoint:
         )
         monkeypatch.chdir(cwd)
 
-        resp = self._request_llms_txt(mcp)
+        with _build_server() as mcp:
+            resp = self._request_llms_txt(mcp)
 
         assert resp.status_code == 404
 
@@ -957,7 +931,6 @@ class TestLlmsTxtEndpoint:
         non-editable install reaches this branch, so without this test the
         candidate could be deleted and the suite would stay green.
         """
-        mcp = self._server()
         cwd = tmp_path / "cwd"
         cwd.mkdir()
         (cwd / "llms.txt").write_text("# From cwd\n\n> served by the fallback\n", encoding="utf-8")
@@ -966,7 +939,8 @@ class TestLlmsTxtEndpoint:
         )
         monkeypatch.chdir(cwd)
 
-        resp = self._request_llms_txt(mcp)
+        with _build_server() as mcp:
+            resp = self._request_llms_txt(mcp)
 
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/plain")
