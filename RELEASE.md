@@ -10,6 +10,20 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+### Security
+
+- **`pyjwt` 2.13.0 -> 2.15.1**, clearing GHSA-ffc3-869f-jxw9. It arrives transitively and was
+  pinned in `uv.lock`; it also led the image's fixable backlog at 26 findings. Fourteen further
+  criticals on the deployed image need no change here: it was built 2026-08-17 from
+  `python:3.12-slim` and carries that base as it stood then, while today's base already ships
+  Python 3.12.15 (CVE-2026-19445), openssl 3.5.7-1~deb13u3 (CVE-2026-63073, CVE-2026-75803),
+  perl-base 5.40.1-6+deb13u1 (five criticals) and libc6 2.41-12+deb13u4. Merging rebuilds on the
+  current base and picks those up.
+
+  Re-locking also moved `onnxruntime` on the `python_full_version < '3.11'` branch, 1.24.3 ->
+  1.23.2. The image is `FROM python:3.12-slim` and resolves the `>= '3.11'` entry, which stays at
+  1.26.0, so the shipped artifact is unaffected.
+
 ### Added
 
 - Validated client config examples for Gemini (`docs/demo/.gemini/settings.json`) and
