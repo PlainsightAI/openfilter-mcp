@@ -28,6 +28,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict
 
 import httpx
@@ -680,6 +681,29 @@ def create_mcp_server() -> FastMCP:
     entity_tools_registered = entity_handler is not None and bool(
         registry and registry.entities
     )
+
+    @mcp.custom_route("/llms.txt", methods=["GET"])
+    async def llms_txt(request):  # noqa: ANN001 — starlette Request
+        """Serve the repo's llms.txt so an agent pointed at a running server
+        can discover the docs without cloning the repo."""
+        from starlette.responses import FileResponse, Response
+
+        # Single source of truth is the file at the repo root. parents[2]
+        # resolves it in a source checkout and in the images alike, since all
+        # three Dockerfiles install the workspace package editable from
+        # /app/src; cwd is a fallback for a non-editable install.
+        candidates = (
+            Path(__file__).resolve().parents[2] / "llms.txt",
+            Path.cwd() / "llms.txt",
+        )
+        for path in candidates:
+            if path.is_file():
+                # FileResponse over read_text: the read moves off the event
+                # loop and the response carries Content-Length, ETag and
+                # Last-Modified, which is worth having on a route agents poll.
+                # The .txt suffix already infers text/plain.
+                return FileResponse(path)
+        return Response("llms.txt not found", status_code=404, media_type="text/plain")
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request):  # noqa: ANN001 — starlette Request

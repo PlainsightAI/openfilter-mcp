@@ -88,7 +88,7 @@ uv run serve
 | [docs/tools.md](docs/tools.md) | Tool reference and architecture |
 | [docs/configuration.md](docs/configuration.md) | Environment variables and authentication |
 | [docs/development.md](docs/development.md) | Dev setup, building, testing, and releasing |
-| [llms.txt](llms.txt) | Discovery entry point for agents and LLMs ([spec](https://llmstxt.org)) |
+| [llms.txt](llms.txt) | Discovery entry point for agents and LLMs ([spec](https://llmstxt.org)). A running server also serves it at `GET /llms.txt`, so an agent can read it without cloning |
 | [skills/openfilter-mcp/SKILL.md](skills/openfilter-mcp/SKILL.md) | Agent Skill: connect, scope a token, build and start a pipeline. Copy the `skills/openfilter-mcp/` directory into your agent's skills directory (`.claude/skills/` for Claude Code) |
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
