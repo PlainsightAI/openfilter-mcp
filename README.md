@@ -6,7 +6,7 @@ An [MCP] server that gives AI agents access to the Plainsight OpenFilter platfor
 
 The server exposes a small, fixed set of tools. The tool count does not grow with the API.
 
-**Platform tools** — 7 generic entity tools that cover the entire Plainsight API. Entity types and schemas are discovered at runtime from the OpenAPI spec via full-text search ([tantivy](https://github.com/quickwit-oss/tantivy)), so agents find what they need without loading hundreds of definitions into context.
+**Platform tools** — 8 generic entity tools that cover the entire Plainsight API. Entity types and schemas are discovered at runtime from the OpenAPI spec via full-text search ([tantivy](https://github.com/quickwit-oss/tantivy)), so agents find what they need without loading hundreds of definitions into context.
 
 **Code search** (optional) — semantic search over indexed OpenFilter repositories. Only available in the full image.
 
@@ -88,6 +88,8 @@ uv run serve
 | [docs/tools.md](docs/tools.md) | Tool reference and architecture |
 | [docs/configuration.md](docs/configuration.md) | Environment variables and authentication |
 | [docs/development.md](docs/development.md) | Dev setup, building, testing, and releasing |
+| [llms.txt](llms.txt) | Discovery entry point for agents and LLMs ([spec](https://llmstxt.org)) |
+| [skills/openfilter-mcp/SKILL.md](skills/openfilter-mcp/SKILL.md) | Agent Skill: connect, scope a token, build and start a pipeline. Copy the `skills/openfilter-mcp/` directory into your agent's skills directory (`.claude/skills/` for Claude Code) |
 
 [uv]: https://docs.astral.sh/uv/getting-started/installation/
 [mcp]: https://anthropic.com/news/model-context-protocol

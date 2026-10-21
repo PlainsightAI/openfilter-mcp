@@ -2,7 +2,7 @@
 
 ## Platform Tools
 
-Seven generic entity tools cover the entire Plainsight API. Entity types and their schemas are discovered at runtime from the [OpenAPI spec](https://api.prod.plainsight.tech/openapi.json), with two-tier discovery via full-text search (tantivy) so the agent can find relevant entities without loading hundreds of tool definitions into context.
+Eight generic entity tools cover the entire Plainsight API. Entity types and their schemas are discovered at runtime from the [OpenAPI spec](https://api.prod.plainsight.tech/openapi.json), with two-tier discovery via full-text search (tantivy) so the agent can find relevant entities without loading hundreds of tool definitions into context.
 
 | Tool | Description |
 |------|-------------|
@@ -25,7 +25,7 @@ The current design uses a two-tier approach:
 
 2. **`get_entity_type_info`** — once the agent knows which entity types it needs, it fetches full schemas, available operations, and field details on demand.
 
-This keeps the core tool count at 7 regardless of how many API endpoints exist.
+This keeps the core tool count at 8 regardless of how many API endpoints exist.
 
 ## Token Scoping Tools
 
