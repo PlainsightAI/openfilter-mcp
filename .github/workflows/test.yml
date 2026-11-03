@@ -8,7 +8,23 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. GitHub rolled that label to Ubuntu 26.04 and
+    # the Playwright version this repo locks (1.60.0) does not know that
+    # platform, so `playwright install --with-deps chromium` fails outright:
+    #
+    #   Cannot install dependencies for ubuntu26.04-x64 with Playwright 1.60.0!
+    #   ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    #
+    # Nothing in the repo changed -- the image moved. main only looks green
+    # because it has not re-run since 2026-10-21.
+    #
+    # Playwright added 26.04 support in 1.61.0 (verified by grepping the
+    # published manylinux wheels: 1.60.0 has no occurrence of `ubuntu26.04`,
+    # 1.61.0 has 28). Raising the floor in pyproject.toml and relocking is the
+    # other half of this and belongs in its own change, where the test suite
+    # can vouch for the newer browser build. Until then this is the version of
+    # Ubuntu the locked Playwright actually supports.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -34,7 +50,9 @@ jobs:
         run: uv run --no-sync python -m pytest tests/ -v --tb=short
 
   helm-lint:
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as the test job above: a floating runner image
+    # is a dependency that changes without a commit.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
