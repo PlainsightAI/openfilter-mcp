@@ -48,4 +48,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and .Values.ingress.enabled (eq .Values.ingress.host "change.me") -}}
 {{- fail "ingress.host must be set in overrides/<env>.yaml" -}}
 {{- end -}}
+{{- if and .Values.gateway.enabled (eq .Values.gateway.host "change.me") -}}
+{{- fail "gateway.host must be set in overrides/<env>.yaml when gateway.enabled" -}}
+{{- end -}}
 {{- end -}}

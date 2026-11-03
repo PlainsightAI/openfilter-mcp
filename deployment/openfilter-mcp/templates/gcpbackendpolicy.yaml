@@ -1,0 +1,47 @@
+{{- include "openfilter-mcp.validate" . -}}
+{{- if .Values.gateway.enabled }}
+---
+# Raise the load balancer's backend response timeout for this Service.
+#
+# Not tuning: without it the Gateway path cuts MCP sessions, and the breakage is
+# quiet from both ends -- the client sees a clean end-of-stream, the server a
+# closed connection, and nothing logs an error.
+#
+# The server runs FastMCP's `http` transport (`mcp.run(transport="http")` in
+# src/openfilter_mcp/server.py), which is Streamable HTTP: the server-to-client
+# leg is an SSE stream held open for the life of the session, not a sequence of
+# short request/response pairs.
+#
+# The value is NOT the 300 that `ingress.annotations` sets on nginx, and the
+# difference is not an oversight. nginx's proxy-read-timeout measures the gap
+# BETWEEN reads, so an active stream resets it indefinitely and 300 means "give
+# up after five idle minutes". On a global external Application Load Balancer
+# timeoutSec is a cap on the WHOLE response, so no amount of traffic defeats it
+# -- 300 here would end every MCP session at five minutes, busy or not.
+# gcloud's own flag reference agrees that --idle-timeout-sec applies only to
+# passthrough Network Load Balancers, not to this scheme.
+#
+# So this tracks the Gateway convention already used for plainsight-api and for
+# the streams listener (86400, one day): long enough not to be the thing that
+# ends a session, short enough to still reap a wedged connection. The nginx
+# annotations stay as they are; they govern the other load balancer and mean
+# something different.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "openfilter-mcp.fullname" . }}
+  labels:
+    {{- include "openfilter-mcp.labels" . | nindent 4 }}
+  annotations:
+    # Settle the backend before the route starts sending traffic to it, rather
+    # than relying on ArgoCD's incidental ordering of two custom resources. It
+    # does not close the reconcile window, but the order is the right way round.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "openfilter-mcp.fullname" . }}
+  default:
+    timeoutSec: {{ .Values.gateway.timeoutSec }}
+{{- end }}

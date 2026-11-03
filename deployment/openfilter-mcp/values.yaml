@@ -74,6 +74,44 @@ securityContext:
     drop: ["ALL"]
   readOnlyRootFilesystem: false
 
+# Serve through the GKE Gateway, in parallel with the Ingress above.
+#
+# Nothing here moves traffic: DNS decides which load balancer a client reaches,
+# and `ingress.host` still resolves to the Ingress. See
+# templates/httproute.yaml.
+gateway:
+  enabled: false
+  # A hostname distinct from `ingress.host`, so the two can be compared side by
+  # side on the same backend before anything is cut over. It must fall under the
+  # listener's wildcard to be accepted, and under the Gateway's wildcard
+  # certificate to serve TLS.
+  host: "change.me"
+  # Also answer for `ingress.host` -- the hostname the nginx Ingress serves
+  # today -- on the Gateway.
+  #
+  # This moves no traffic on its own; it stops the Gateway returning 404 for
+  # that name when a client is pointed at the Gateway address deliberately.
+  # Two things depend on it: testing from a network that filters by hostname
+  # (`curl --resolve <ingress.host>:443:<gateway IP>` keeps the name the policy
+  # already allows), and making the cutover DNS-only, with nothing to deploy at
+  # the moment of the change.
+  #
+  # Default false: turning the Gateway on should not silently claim the
+  # hostname live traffic uses. Set it per environment, deliberately.
+  claimIngressHost: false
+  # Backend response timeout on the load balancer, in seconds. Deliberately not
+  # the 300 the nginx annotations use -- that one is an idle timer, this one
+  # caps the whole response. See templates/gcpbackendpolicy.yaml.
+  timeoutSec: 86400
+  parentRef:
+    name: external-gateway
+    namespace: gateway-system
+    # Pin the listener. Without sectionName the route attaches to every
+    # listener whose hostname overlaps, which on this Gateway means it would
+    # also land on `streams` and `telemetry` and claim hostnames that are not
+    # this app's to answer for.
+    sectionName: https
+
 service:
   type: ClusterIP
   port: 80

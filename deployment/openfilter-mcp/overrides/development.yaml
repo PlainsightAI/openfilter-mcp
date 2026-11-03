@@ -6,7 +6,28 @@ oauth:
   asUrl: "https://api.dev.plainsight.tech"
   # resourceUrl defaults to https://<ingress.host> in the chart.
 ingress:
+  # Keep this set even once `ingress.enabled` goes false: OAUTH_RESOURCE_URL
+  # falls back to `https://<ingress.host>` (templates/deployment.yaml), and that
+  # fallback is not gated on `enabled`. It is the canonical public URL of this
+  # server, which the Gateway serves after the cutover just as the Ingress does
+  # now -- so the value stays correct, and removing it would fail the render.
   host: mcp.dev.plainsight.tech
+
+# Development first: this is where the Gateway path gets proven before any
+# environment depends on it, in parallel with the Ingress above.
+gateway:
+  enabled: true
+  # Reachability check on a name of its own. OAuth will NOT work through this
+  # hostname -- the AS-issued `aud` is bound to `<resourceUrl>/mcp`, and
+  # resourceUrl is the `mcp.dev` name -- so this proves routing and TLS, not
+  # the full auth path.
+  host: mcp-gw.dev.plainsight.tech
+  # Which is why this is on. Claiming `ingress.host` lets the real hostname be
+  # tested against the Gateway address (`curl --resolve
+  # mcp.dev.plainsight.tech:443:<gateway IP>`) with the OAuth resource URL
+  # matching, and makes the eventual cutover a DNS change with nothing to
+  # deploy. No traffic moves: DNS still sends mcp.dev to the Ingress.
+  claimIngressHost: true
 resources:
   requests:
     cpu: 50m

@@ -1,0 +1,51 @@
+{{- include "openfilter-mcp.validate" . -}}
+{{- if .Values.gateway.enabled }}
+---
+# Serves the MCP endpoint through the GKE Gateway, alongside the nginx Ingress
+# rather than instead of it.
+#
+# The two are independent load balancers -- nginx holds a regional address, the
+# Gateway a global one -- and nothing routes here until DNS says so. That is
+# deliberate: the addresses are not interchangeable, so the cutover is a DNS
+# change, and it needs a target that already works before anyone points at it.
+#
+# `*.<env>.plainsight.tech` already resolves to the Gateway by wildcard, with
+# per-host records overriding it. So `gateway.host` needs no record of its own,
+# and the cutover is deleting the per-host record and letting it fall through
+# to the wildcard -- reversible by putting the record back.
+#
+# TLS is not configured here. The listener terminates it with the
+# `*.<env>.plainsight.tech` wildcard certificate, which already covers this
+# hostname, so the per-host `ingress.tlsSecretName` has no counterpart and
+# needs none.
+#
+# The route attaches only if the namespace carries the label the listener
+# selects on (`gateway.plainsight.ai/route-access: "true"`). Without it the
+# route is silently rejected with `Accepted=False / NotAllowedByListeners` and
+# nothing else reports a problem: the Gateway stays Programmed, the app stays
+# Synced and Healthy, and the hostname just 404s. The label is set in gitops
+# through the ApplicationSet's `syncPolicy.managedNamespaceMetadata`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "openfilter-mcp.fullname" . }}
+  labels:
+    {{- include "openfilter-mcp.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.parentRef.name }}
+      namespace: {{ .Values.gateway.parentRef.namespace }}
+      sectionName: {{ .Values.gateway.parentRef.sectionName }}
+  hostnames:
+    - {{ required "gateway.host must be set in overrides/<env>.yaml" .Values.gateway.host | quote }}
+    {{- if .Values.gateway.claimIngressHost }}
+    # The hostname the Ingress serves. Claiming it here routes it only for
+    # clients that reach this Gateway's address, which DNS does not send
+    # anyone to yet -- see `gateway.claimIngressHost` in values.yaml.
+    - {{ .Values.ingress.host | quote }}
+    {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ include "openfilter-mcp.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}
