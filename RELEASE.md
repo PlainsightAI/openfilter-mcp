@@ -10,6 +10,16 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+### Fixed
+
+- **HealthCheckPolicy for the Gateway path.** Under `gke-l7-global-external-managed` GKE creates a
+  Google Cloud health check against the backend NEG, and with no policy it probes `GET /` — which
+  this server answers 404 on, marking every backend down. The result is a 503 for a route that is
+  otherwise entirely correct: `Accepted=True`, `ResolvedRefs=True`, `ReconciliationSucceeded`, and
+  still 503, observed on the development Gateway. The Deployment's readinessProbe already used
+  `/health`, but the load balancer does not read Kubernetes probes. `plainsight-api` needs no such
+  policy because its `/` answers 200, which is why this did not surface there.
+
 ### Changed
 
 - **CI runner pinned to `ubuntu-26.04`, and `playwright` floor raised to `>=1.61.0`** (relock lands

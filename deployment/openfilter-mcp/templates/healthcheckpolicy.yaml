@@ -1,0 +1,43 @@
+{{- include "openfilter-mcp.validate" . -}}
+{{- if .Values.gateway.enabled }}
+---
+# Point the load balancer's health check at an endpoint this server actually
+# answers 200 on.
+#
+# Under GatewayClass gke-l7-global-external-managed, GKE creates a Google Cloud
+# health check against the backend NEG, and with no HealthCheckPolicy it probes
+# `GET /`. This server has no root handler and answers 404 there, so every
+# backend is marked down and the Gateway returns 503 for a route that is
+# otherwise correct -- Accepted=True, ResolvedRefs=True,
+# ReconciliationSucceeded, and still 503. Observed on the development Gateway
+# before this existed.
+#
+# The Deployment's readinessProbe already uses /health, but the load balancer
+# does not read Kubernetes probes; it needs to be told separately. /health
+# answers 200 unauthenticated, which is what a health check requires -- /mcp
+# answers 401 and would fail just as 404 does.
+#
+# Same shape as applications/plainsight-telemetry-gateway-ingress in gitops,
+# which exists for exactly this reason. plainsight-api needs no such policy
+# because its `/` answers 200.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "openfilter-mcp.fullname" . }}
+  labels:
+    {{- include "openfilter-mcp.labels" . | nindent 4 }}
+  annotations:
+    # Settle the health check before the route starts sending traffic, rather
+    # than relying on ArgoCD's incidental ordering of custom resources.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "openfilter-mcp.fullname" . }}
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: {{ .Values.gateway.healthCheckPath | quote }}
+{{- end }}
