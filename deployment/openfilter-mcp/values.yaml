@@ -103,6 +103,11 @@ gateway:
   # the 300 the nginx annotations use -- that one is an idle timer, this one
   # caps the whole response. See templates/gcpbackendpolicy.yaml.
   timeoutSec: 86400
+  # Path the load balancer's health check probes. Must answer 200
+  # unauthenticated: with no HealthCheckPolicy GKE probes `/`, which this
+  # server answers 404 on, marking every backend down and returning 503 for an
+  # otherwise-correct route. See templates/healthcheckpolicy.yaml.
+  healthCheckPath: /health
   parentRef:
     name: external-gateway
     namespace: gateway-system
