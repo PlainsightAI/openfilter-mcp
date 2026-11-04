@@ -8,7 +8,28 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned to an exact image, not `ubuntu-latest`. GitHub rolled that label
+    # to Ubuntu 26.04 and the Playwright this repo locked (1.60.0) did not know
+    # that platform, so `playwright install --with-deps chromium` failed
+    # outright:
+    #
+    #   Cannot install dependencies for ubuntu26.04-x64 with Playwright 1.60.0!
+    #   ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    #
+    # Nothing in the repo changed -- the image moved. main only looked green
+    # because it had not re-run since 2026-10-21.
+    #
+    # Pinned rather than left floating because that is the actual failure here:
+    # a runner image that changes without a commit. The value is 26.04 rather
+    # than the 24.04 we were implicitly on, because the suite passes there once
+    # Playwright knows the platform -- which it does from 1.61.0, verified
+    # against the published manylinux wheels (1.60.0 contains no occurrence of
+    # `ubuntu26.04`, 1.61.0 contains 28) and then confirmed by running the
+    # whole suite on 26.04 with 1.64.1 on both Python versions.
+    #
+    # Moving this label is now a deliberate edit that shows up in review, and
+    # it has to move together with the Playwright floor in pyproject.toml.
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -34,7 +55,9 @@ jobs:
         run: uv run --no-sync python -m pytest tests/ -v --tb=short
 
   helm-lint:
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as the test job above: a floating runner image
+    # is a dependency that changes without a commit.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
 
