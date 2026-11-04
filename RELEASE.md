@@ -10,6 +10,18 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ## [Unreleased]
 
+### Changed
+
+- **CI runner pinned to `ubuntu-26.04`, and `playwright` floor raised to `>=1.61.0`** (relock lands
+  1.64.1). `ubuntu-latest` rolled to 26.04 and the locked Playwright 1.60.0 does not know that
+  platform, so `playwright install --with-deps chromium` failed outright on every PR while `main`
+  stayed green only because it had not re-run since 2026-10-21. Nothing in the repo had changed.
+  Pinned rather than left floating because that is the failure: a runner image that moves without a
+  commit. 1.61.0 is the first release that recognises `ubuntu26.04` — verified against the published
+  manylinux wheels, where 1.60.0 has no occurrence of that string and 1.61.0 has 28 — and the full
+  suite was run on 26.04 with 1.64.1 on Python 3.11 and 3.12 before pinning there. The label and the
+  Playwright floor now have to move together.
+
 ### Security
 
 - **`pyjwt` 2.13.0 -> 2.15.1**, clearing GHSA-ffc3-869f-jxw9. It arrives transitively and was

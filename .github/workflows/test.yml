@@ -8,23 +8,28 @@ on:
 
 jobs:
   test:
-    # Pinned, not `ubuntu-latest`. GitHub rolled that label to Ubuntu 26.04 and
-    # the Playwright version this repo locks (1.60.0) does not know that
-    # platform, so `playwright install --with-deps chromium` fails outright:
+    # Pinned to an exact image, not `ubuntu-latest`. GitHub rolled that label
+    # to Ubuntu 26.04 and the Playwright this repo locked (1.60.0) did not know
+    # that platform, so `playwright install --with-deps chromium` failed
+    # outright:
     #
     #   Cannot install dependencies for ubuntu26.04-x64 with Playwright 1.60.0!
     #   ERROR: Playwright does not support chromium on ubuntu26.04-x64
     #
-    # Nothing in the repo changed -- the image moved. main only looks green
-    # because it has not re-run since 2026-10-21.
+    # Nothing in the repo changed -- the image moved. main only looked green
+    # because it had not re-run since 2026-10-21.
     #
-    # Playwright added 26.04 support in 1.61.0 (verified by grepping the
-    # published manylinux wheels: 1.60.0 has no occurrence of `ubuntu26.04`,
-    # 1.61.0 has 28). Raising the floor in pyproject.toml and relocking is the
-    # other half of this and belongs in its own change, where the test suite
-    # can vouch for the newer browser build. Until then this is the version of
-    # Ubuntu the locked Playwright actually supports.
-    runs-on: ubuntu-24.04
+    # Pinned rather than left floating because that is the actual failure here:
+    # a runner image that changes without a commit. The value is 26.04 rather
+    # than the 24.04 we were implicitly on, because the suite passes there once
+    # Playwright knows the platform -- which it does from 1.61.0, verified
+    # against the published manylinux wheels (1.60.0 contains no occurrence of
+    # `ubuntu26.04`, 1.61.0 contains 28) and then confirmed by running the
+    # whole suite on 26.04 with 1.64.1 on both Python versions.
+    #
+    # Moving this label is now a deliberate edit that shows up in review, and
+    # it has to move together with the Playwright floor in pyproject.toml.
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -52,7 +57,7 @@ jobs:
   helm-lint:
     # Pinned for the same reason as the test job above: a floating runner image
     # is a dependency that changes without a commit.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
 
