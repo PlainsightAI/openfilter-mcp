@@ -14,3 +14,38 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
+
+# In parallel with the Ingress above, following development. Nothing moves
+# until DNS does: mcp.staging.plainsight.tech still resolves to the regional
+# nginx address, and this publishes a second front door on the Gateway's
+# global one (34.95.91.30).
+#
+# Measured through the nginx path before enabling (2026-11-04):
+#   https://mcp.staging.plainsight.tech/        -> 404
+#   https://mcp.staging.plainsight.tech/health  -> 200
+# That 404 is why the HealthCheckPolicy is not optional. GKE's default backend
+# probe is `GET /` and counts only 2xx, so without the policy every backend is
+# marked down and the route serves 503 while reporting Accepted=True,
+# ResolvedRefs=True and ReconciliationSucceeded. The chart renders the policy
+# pointed at /health whenever gateway.enabled is set.
+#
+# Also confirmed in the staging cluster: namespace `openfilter-mcp` carries
+# gateway.plainsight.ai/route-access=true (from the ApplicationSet's
+# managedNamespaceMetadata), without which the route is rejected with
+# NotAllowedByListeners; and the `https` listener serves
+# *.staging.plainsight.tech, which covers both hostnames below.
+gateway:
+  enabled: true
+  # Reachability check on a name of its own, covered by the listener's
+  # wildcard so it needs no DNS record. OAuth will NOT work through this
+  # hostname -- the AS-issued `aud` is bound to `<resourceUrl>/mcp`, and
+  # resourceUrl falls back to https://<ingress.host> -- so it proves routing
+  # and TLS, not the auth path.
+  host: mcp-gw.staging.plainsight.tech
+  # Which is why this is on. Claiming `ingress.host` lets the real hostname be
+  # exercised against the Gateway address
+  # (`curl --resolve mcp.staging.plainsight.tech:443:34.95.91.30`) with the
+  # OAuth resource URL matching, and makes the eventual cutover a DNS change
+  # with nothing to deploy. No traffic moves: DNS still sends mcp.staging to
+  # the Ingress.
+  claimIngressHost: true
