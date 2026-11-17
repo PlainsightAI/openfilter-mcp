@@ -12,6 +12,33 @@ ingress:
   # server, which the Gateway serves after the cutover just as the Ingress does
   # now -- so the value stays correct, and removing it would fail the render.
   host: mcp.dev.plainsight.tech
+  annotations:
+    # Keep this Ingress out of external-dns's sources, so that deleting the
+    # record for this hostname actually sticks and the name falls through to
+    # the `*.dev.plainsight.tech` wildcard, which resolves to the Gateway.
+    # The HTTPRoute already serves this host there: `claimIngressHost` below
+    # is what puts it on the route.
+    #
+    # Deleting the record on its own does not work. external-dns takes this
+    # Ingress as a source (`controllers/external-dns/overrides/base.yaml` in
+    # PlainsightAI/gitops) and runs with an upsert-only policy on a short
+    # reconcile interval -- both chart defaults of the pinned external-dns
+    # 1.18.0, not declared there -- so while this Ingress is one of its
+    # sources it re-publishes the record from the nginx load balancer address.
+    # Measured on another host in development on 2026-11-13: the A and TXT
+    # records were deleted and external-dns added both back 4 seconds later.
+    #
+    # upsert-only also means external-dns never deletes, so the record
+    # survives this commit and no traffic moves. The cutover is the manual
+    # deletion of the record afterwards, which nothing then re-creates. It
+    # also means the reverse: removing this annotation later would publish a
+    # record that nothing takes away again, so it comes out only together with
+    # the Ingress itself.
+    #
+    # Nothing else about the Ingress changes. The nginx annotations in
+    # values.yaml -- the ssl-redirect pair and the 300s proxy timeouts -- are
+    # merged with this one by Helm, not replaced.
+    external-dns.alpha.kubernetes.io/controller: "none"
 
 # Development first: this is where the Gateway path gets proven before any
 # environment depends on it, in parallel with the Ingress above.
