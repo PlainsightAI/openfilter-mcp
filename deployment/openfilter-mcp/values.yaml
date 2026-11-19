@@ -122,7 +122,18 @@ service:
   port: 80
 
 ingress:
-  enabled: true
+  # Disabled in every environment. Each hostname resolves through its
+  # `*.<env>.plainsight.tech` wildcard to the Gateway, where the HTTPRoute
+  # claims it via `gateway.claimIngressHost`; nothing has reached this Ingress
+  # since the cutover.
+  #
+  # Off here rather than per environment because it is off in all three, and
+  # the external-dns opt-out annotation that used to sit below went out with
+  # it. Re-enabling is therefore not just this flag: restore
+  # `external-dns.alpha.kubernetes.io/controller: "none"` alongside it, or
+  # external-dns republishes an A record pointing at the nginx load balancer,
+  # and its upsert-only policy never takes that record away again.
+  enabled: false
   className: nginx
   host: "change.me"
   clusterIssuer: cloud-dns
@@ -138,30 +149,3 @@ ingress:
     # headroom without leaving idle connections open indefinitely.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-    # Keep this Ingress out of external-dns's sources, so that deleting the
-    # record for a hostname actually sticks and the name falls through to the
-    # `*.<env>.plainsight.tech` wildcard, which resolves to the Gateway. The
-    # HTTPRoute already serves the host there: `gateway.claimIngressHost` in
-    # each override is what puts it on the route.
-    #
-    # Here rather than in the three overrides because it is the same in all
-    # three, and it needs no removal per environment: the annotation is only
-    # rendered with the Ingress, so it goes inert on its own for any
-    # environment whose `ingress.enabled` is false.
-    #
-    # Deleting the record on its own does not work. external-dns takes this
-    # Ingress as a source (`controllers/external-dns/overrides/base.yaml` in
-    # PlainsightAI/gitops) and runs with an upsert-only policy on a short
-    # reconcile interval -- both chart defaults of the pinned external-dns
-    # 1.18.0, not declared there -- so while this Ingress is one of its
-    # sources it re-publishes the record from the nginx load balancer address.
-    # Measured on another host in development on 2026-11-13: the A and TXT
-    # records were deleted and external-dns added both back 4 seconds later.
-    #
-    # upsert-only also means external-dns never deletes, so the records
-    # survive this commit and no traffic moves. The cutover is the manual
-    # deletion of each record afterwards, which nothing then re-creates. It
-    # also means the reverse: removing this annotation later would publish
-    # records that nothing takes away again, so it comes out only together
-    # with the Ingress itself.
-    external-dns.alpha.kubernetes.io/controller: "none"
