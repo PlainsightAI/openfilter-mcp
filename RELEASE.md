@@ -12,6 +12,12 @@ rename the `[Unreleased]` heading to the new `## vX.Y.Z` and bump
 
 ### Fixed
 
+- **Load-balancer access logging restored on the Gateway backend.** GKE enables backend-service
+  access logs by default, but a GCPBackendPolicy's `spec.default` replaces those defaults instead of
+  merging with them, so the policy this chart adds for `timeoutSec` silently turned the backend
+  service's request logs off. `sampleRate` is left unset, which keeps the full rate a backend logs at
+  when no policy touches it.
+
 - **HealthCheckPolicy for the Gateway path.** Under `gke-l7-global-external-managed` GKE creates a
   Google Cloud health check against the backend NEG, and with no policy it probes `GET /` — which
   this server answers 404 on, marking every backend down. The result is a 503 for a route that is

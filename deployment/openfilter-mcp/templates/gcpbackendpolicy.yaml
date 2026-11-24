@@ -44,4 +44,19 @@ spec:
     name: {{ include "openfilter-mcp.fullname" . }}
   default:
     timeoutSec: {{ .Values.gateway.timeoutSec }}
+    # Load-balancer access logging, back on.
+    #
+    # GKE enables backend-service access logs by default, but a
+    # GCPBackendPolicy's `spec.default` REPLACES those defaults instead of
+    # merging with them. This policy exists only to raise `timeoutSec` so a
+    # Streamable HTTP session is not cut mid-stream, and adding it silently
+    # turned the backend service's request logs off -- confirmed by reading
+    # `logConfig.enable` on the backend services of our deployments, where
+    # every backend fronted by a policy without this block is false and every
+    # backend without a policy is true.
+    #
+    # No sampleRate: leaving it out keeps the full rate a backend logs at when
+    # no policy touches it.
+    logging:
+      enabled: true
 {{- end }}
